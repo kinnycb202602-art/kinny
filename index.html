@@ -21,10 +21,120 @@
 </head>
 <body>
 
-    <iframe 
-        src="https://cdn.botpress.cloud/webchat/v3.6/shareable.html?configUrl=https://files.bpcontent.cloud/2026/05/01/17/20260501175251-3JG08ZL7.json" 
-        allowfullscreen>
-    </iframe>
+    <!-- Example Video Player (must be on the same domain/page to track events) -->
+    <div id="media-container" style="position: absolute; top: 10px; left: 10px; z-index: 100; background: white; padding: 10px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <h3>Sample Video (For Tracking)</h3>
+        <video id="my-video" width="320" controls>
+            <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
+            Your browser does not support HTML video.
+        </video>
+    </div>
 
+    <!-- Botpress Webchat Injection -->
+    <script src="https://cdn.botpress.cloud/webchat/v3.6/inject.js"></script>
+    <script>
+        // Initialize Botpress Webchat
+        window.botpress.init({
+            "configUrl": "https://files.bpcontent.cloud/2026/05/01/17/20260501175251-3JG08ZL7.json"
+        });
+    </script>
+
+    <script>
+        // --- Botpress API Configuration ---
+        const BP_API_KEY = "bp_bak_CTTFhznb_7_rPLN0e-A5dajudFQ2985kbUob"; // User to provide API key
+        const BP_BOT_ID = "8549d670-8fda-4a37-b890-cd839462de23";
+        const TABLE_ID = "table_01KQJ0H3V7MSPK6MS50ZG7ZH0F"; // UserInputTable ID
+        
+        // Dynamically extracted user info
+        let currentUserId = localStorage.getItem("kinny_user_id") || "unknown"; 
+        let currentSession = localStorage.getItem("kinny_session") || "unknown";
+        let lastUserMessage = "";
+
+        // Listen to Botpress Webchat events to dynamically extract session info
+        window.botpress.on('*', (event) => {
+            if (event.type === 'message') {
+                const messageText = event.payload?.text || "";
+
+                if (event.direction === 'outgoing' || event.userId !== BP_BOT_ID) {
+                    // Record the last thing the user typed (likely their User ID when asked)
+                    lastUserMessage = messageText;
+                } else {
+                    // It's a message from the Bot. Let's look for the Session confirmation pattern.
+                    // Based on the BPZ, the bot says: "歡迎回來！這星期是學習第 {{session}} 節..."
+                    const sessionMatch = messageText.match(/學習第\s*(\d+)\s*節/);
+                    if (sessionMatch) {
+                        currentSession = sessionMatch[1];
+                        localStorage.setItem("kinny_session", currentSession);
+                        
+                        // If session is confirmed, the previous user message was likely their User ID
+                        if (lastUserMessage) {
+                            currentUserId = lastUserMessage;
+                            localStorage.setItem("kinny_user_id", currentUserId);
+                        }
+                        
+                        console.log(`Dynamically captured User ID: ${currentUserId}, Session: ${currentSession}`);
+                    }
+                }
+            }
+        });
+
+        async function logToBotpressTable(mediaName, action, progressSeconds) {
+            if (BP_API_KEY === "YOUR_API_KEY_HERE") {
+                console.log("API Key missing! Would have logged:", action, progressSeconds, "for User:", currentUserId, "Session:", currentSession);
+                return;
+            }
+
+            const apiUrl = `https://api.botpress.cloud/v1/chat/tables/${TABLE_ID}/rows`;
+            const payload = {
+                rows: [
+                    {
+                        UserId: currentUserId,
+                        Session: currentSession,
+                        VariableName: mediaName,
+                        VariableValue: JSON.stringify({ action: action, progress_seconds: progressSeconds, timestamp: new Date().toISOString() })
+                    }
+                ]
+            };
+
+            try {
+                const response = await fetch(apiUrl, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Bearer ${BP_API_KEY}`,
+                        "x-bot-id": BP_BOT_ID
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                    console.log(`Successfully logged '${action}' to Botpress UserInputTable.`);
+                } else {
+                    console.error("Failed to log to Botpress:", await response.text());
+                }
+            } catch (error) {
+                console.error("Error logging to Botpress:", error);
+            }
+        }
+
+        // --- Media Tracking Logic ---
+        document.addEventListener("DOMContentLoaded", () => {
+            const video = document.getElementById("my-video");
+
+            if (video) {
+                video.addEventListener("play", () => {
+                    logToBotpressTable("Sample_Video", "play", Math.round(video.currentTime));
+                });
+
+                video.addEventListener("pause", () => {
+                    logToBotpressTable("Sample_Video", "pause", Math.round(video.currentTime));
+                });
+
+                video.addEventListener("ended", () => {
+                    logToBotpressTable("Sample_Video", "ended", Math.round(video.currentTime));
+                });
+            }
+        });
+    </script>
 </body>
 </html>
