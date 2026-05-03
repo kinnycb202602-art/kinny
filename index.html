@@ -34,6 +34,15 @@
     #vt-status-bar #vt-msg  { color: #e2e8f0; flex: 1; }
     #vt-status-bar #vt-time { color: #555; font-size: 11px; }
     #bp-embedded { flex: 1; width: 100%; min-height: 0; }
+
+    /* ── Status bar visibility ───────────────────────────────
+       Hidden by default for end users.
+       To show it: add ?debug to the URL, e.g.
+         http://localhost:8080/botpress-video-tracking.html?debug
+       To hide it again: remove ?debug from the URL.
+       You can also temporarily force-show by changing the line
+       below from "display: none" to "display: flex".            */
+    #vt-status-bar { display: none !important; }
   </style>
 </head>
 <body>
@@ -400,6 +409,11 @@
       window.botpress.on('message',         onMessage);
       window.botpress.on('webchat:message', onMessage);
     });
+
+    // ── Debug mode: show status bar when ?debug in URL ───────
+    if (new URLSearchParams(window.location.search).has('debug')) {
+      document.getElementById('vt-status-bar').style.display = 'flex';
+    }
 
     setStatus('', 'Script loaded — waiting for page...');
 
