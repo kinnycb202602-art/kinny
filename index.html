@@ -44,6 +44,59 @@
        You can also temporarily force-show by changing the line
        below from "display: none" to "display: flex".            */
     #vt-status-bar { display: none !important; }
+
+    /* ── Image enlarge button (one per image, always visible) ── */
+    .vt-img-btn {
+      position: fixed;
+      z-index: 2147483646;
+      width: 32px;
+      height: 32px;
+      background: rgba(0, 0, 0, 0.55);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s;
+      pointer-events: auto;
+    }
+    .vt-img-btn:hover { background: rgba(0, 0, 0, 0.8); }
+
+    /* ── Lightbox ───────────────────────────────────────────── */
+    #vt-lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      background: rgba(0, 0, 0, 0.88);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: zoom-out;
+    }
+    #vt-lightbox.open { display: flex; }
+    #vt-lightbox img {
+      max-width: 92vw;
+      max-height: 92vh;
+      object-fit: contain;
+      border-radius: 6px;
+      box-shadow: 0 12px 60px rgba(0,0,0,0.7);
+      cursor: default;
+    }
+    #vt-lightbox-close {
+      position: fixed;
+      top: 16px;
+      right: 20px;
+      color: #fff;
+      font-size: 32px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0.7;
+      background: none;
+      border: none;
+      font-family: sans-serif;
+    }
+    #vt-lightbox-close:hover { opacity: 1; }
   </style>
 </head>
 <body>
@@ -56,6 +109,12 @@
   </div>
 
   <div id="bp-embedded"></div>
+
+  <!-- Lightbox -->
+  <div id="vt-lightbox">
+    <button id="vt-lightbox-close" aria-label="Close">&times;</button>
+    <img id="vt-lightbox-img" src="" alt="Enlarged image">
+  </div>
 
   <script src="https://cdn.botpress.cloud/webchat/v3.6/inject.js"></script>
   <script src="https://files.bpcontent.cloud/2026/05/01/17/20260501175250-U19M6YD6.js" defer></script>
@@ -260,9 +319,31 @@
       .catch(function(e){ setStatus('error', '✗ Network error: ' + e.message); });
     }
 
+    // ── Lightbox ─────────────────────────────────────────────
+    var _lbBox   = document.getElementById('vt-lightbox');
+    var _lbImg   = document.getElementById('vt-lightbox-img');
+    var _lbClose = document.getElementById('vt-lightbox-close');
+
+    function openLightbox(src) {
+      _lbImg.src = src;
+      _lbBox.classList.add('open');
+    }
+    function closeLightbox() {
+      _lbBox.classList.remove('open');
+      _lbImg.src = '';
+    }
+
+    _lbBox.addEventListener('click', closeLightbox);
+    _lbImg.addEventListener('click', function(e) { e.stopPropagation(); });
+    _lbClose.addEventListener('click', function(e) { e.stopPropagation(); closeLightbox(); });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeLightbox();
+    });
+
     // ── DOM walker — handles shadow roots + text nodes ────────
     const trackedVideos = new WeakSet();
     const trackedAudios = new WeakSet();
+    const trackedImages = new WeakSet();
     const observedRoots = new WeakSet();
     const observer      = new MutationObserver(scanAll);
 
@@ -303,6 +384,12 @@
         return;
       }
 
+      // IMAGE — attach enlarge button
+      if (node.nodeType === 1 && node.tagName === 'IMG') {
+        attachToImage(node);
+        return;
+      }
+
       // SHADOW ROOT — observe it and walk inside
       if (node.shadowRoot) {
         observeRoot(node.shadowRoot);
@@ -332,6 +419,49 @@
       a.addEventListener('play',  function(){ logAudioRow('Click Play Audio (HK)', hkNow()); });
       a.addEventListener('pause', function(){ if (!a.ended) logAudioRow('Click Pause Audio (HK)', hkNow()); });
       a.addEventListener('ended', function(){ logAudioRow('Audio Listen End Time (HK)', hkNow()); });
+    }
+
+    var _imgBtnSVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 6V1H6M10 1H15V6M15 10V15H10M6 15H1V10" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+    // Pairs of { img, btn } — updated on a 100ms interval so shadow-DOM
+    // scroll (which doesn't bubble to window) is always caught.
+    var _imgPairs = [];
+    setInterval(function() {
+      _imgPairs.forEach(function(p) {
+        var r = p.img.getBoundingClientRect();
+        var hidden = r.width < 60 || r.height < 60 ||
+                     r.bottom <= 0 || r.top >= window.innerHeight;
+        p.btn.style.display = hidden ? 'none' : 'flex';
+        if (!hidden) {
+          p.btn.style.top  = Math.round(r.bottom - 38) + 'px';
+          p.btn.style.left = Math.round(r.right  - 38) + 'px';
+        }
+      });
+    }, 100);
+
+    function attachToImage(img) {
+      if (trackedImages.has(img)) return;
+      // Skip tiny icons / avatars (< 60 px wide)
+      if (img.complete && img.naturalWidth > 0 && img.naturalWidth < 60) return;
+      trackedImages.add(img);
+
+      img.style.cursor = 'zoom-in';
+
+      var btn = document.createElement('button');
+      btn.className = 'vt-img-btn';
+      btn.innerHTML = _imgBtnSVG;
+      btn.title = 'Enlarge image';
+      btn.setAttribute('aria-label', 'Enlarge image');
+      document.body.appendChild(btn);
+      _imgPairs.push({ img: img, btn: btn });
+
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (img.src) openLightbox(img.src);
+      });
+      img.addEventListener('click', function() {
+        if (img.src) openLightbox(img.src);
+      });
     }
 
     // ── Read marker from message text ─────────────────────────
