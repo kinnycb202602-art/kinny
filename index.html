@@ -443,6 +443,9 @@
       if (trackedImages.has(img)) return;
       // Skip tiny icons / avatars (< 60 px wide)
       if (img.complete && img.naturalWidth > 0 && img.naturalWidth < 60) return;
+      // Skip circular images (bot logo / avatar — border-radius: 50%)
+      var br = window.getComputedStyle(img).borderRadius || '';
+      if (br.indexOf('50%') !== -1 || br === '9999px' || parseFloat(br) >= 9999) return;
       trackedImages.add(img);
 
       img.style.cursor = 'zoom-in';
