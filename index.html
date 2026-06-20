@@ -170,6 +170,10 @@
     let currentPlacement    = 'General';
     let currentReviewSession = '';
 
+    // ── ConversationId tracking (client-side, always matches active conversation) ──
+    var _currentConvId = '';
+    var _convIdLogged  = false;
+
     // ── Status bar ────────────────────────────────────────────
     const dot = document.getElementById('vt-dot');
     const msg = document.getElementById('vt-msg');
@@ -355,6 +359,36 @@
       .catch(function(e){ setStatus('error', '✗ Network error: ' + e.message); });
     }
 
+    // ── Log ConversationId (once per page load, from client side) ──
+    // VariableName = "ConversationId", VariableValue = actual conv_01... ID
+    // Waits until both userId and session markers have arrived, then logs once.
+    function logConvId() {
+      if (_convIdLogged || !_currentConvId ||
+          currentUserId === 'unknown' || !currentSession) return;
+      _convIdLogged = true;
+      console.log('[VideoTrack] Logging ConversationId:', _currentConvId);
+      fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + PAT,
+          'x-bot-id':      BOT_ID,
+          'Content-Type':  'application/json'
+        },
+        body: JSON.stringify({
+          rows: [{ UserId: currentUserId, Session: currentSession,
+                   VariableName: 'ConversationId', VariableValue: _currentConvId }]
+        })
+      })
+      .then(function(res) {
+        if (res.ok) {
+          setStatus('success', '✓ ConversationId logged: ' + _currentConvId);
+        } else {
+          res.text().then(function(t) { console.error('[VideoTrack] ConvId API error:', t); });
+        }
+      })
+      .catch(function(e) { console.error('[VideoTrack] ConvId log error:', e.message); });
+    }
+
     // ── Lightbox ─────────────────────────────────────────────
     var _lbBox   = document.getElementById('vt-lightbox');
     var _lbImg   = document.getElementById('vt-lightbox-img');
@@ -514,11 +548,13 @@
         setStatus('ready', 'UserId: ' + currentUserId);
         console.log('[VideoTrack] UserId set:', currentUserId);
         scheduleHideMarker('userid:');
+        logConvId(); // log ConversationId if convId already captured & session is set
       } else if (text.startsWith('__session:') && text.endsWith('__')) {
         currentSession = text.slice(10, -2).trim();
         setStatus('ready', 'Session: ' + currentSession);
         console.log('[VideoTrack] Session set:', currentSession);
         scheduleHideMarker('session:');
+        logConvId(); // log ConversationId if convId already captured & userId is set
       } else if (text.startsWith('__placement:') && text.endsWith('__')) {
         currentPlacement = text.slice(12, -2).trim();
         setStatus('ready', 'Placement: ' + currentPlacement);
@@ -557,6 +593,15 @@
 
         // Log FULL message (no truncation) to debug structure
         console.log('[VideoTrack] FULL MSG:', JSON.stringify(msg));
+
+        // ── Capture ConversationId from this message (client-side, always accurate) ──
+        var cid = msg.conversationId || msg.conversation_id ||
+                  (msg.conversation && msg.conversation.id) || '';
+        if (cid && !_currentConvId) {
+          _currentConvId = cid;
+          console.log('[VideoTrack] ConversationId captured:', cid);
+          logConvId(); // may no-op if userId/session not yet set — will retry on their markers
+        }
 
         // Botpress webchat v3: msg.block = {type:"bubble", block:{type:"text", text:"..."}}
         var text = '';
