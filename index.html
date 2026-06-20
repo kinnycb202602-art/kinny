@@ -116,6 +116,40 @@
     <img id="vt-lightbox-img" src="" alt="Enlarged image">
   </div>
 
+  <!-- ── 24-hour session reset ────────────────────────────────
+       Must run BEFORE Botpress scripts load so the webchat
+       starts with clean storage when the window has expired.   -->
+  <script>
+  (function () {
+    var RESET_KEY   = 'vt_session_started';
+    var WINDOW_MS   = 5 * 60 * 1000;          // ← 5 min for testing (change to 24 * 60 * 60 * 1000 for production)
+    var now         = Date.now();
+    var lastStart   = parseInt(localStorage.getItem(RESET_KEY) || '0', 10);
+    var needsReset  = !lastStart || (now - lastStart) > WINDOW_MS;
+
+    if (needsReset) {
+      // Clear every Botpress key in localStorage
+      var toRemove = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && (
+          k.startsWith('bp/')        ||
+          k.startsWith('botpress')   ||
+          k.indexOf('8549d670') !== -1   // bot ID safety-net
+        )) {
+          toRemove.push(k);
+        }
+      }
+      toRemove.forEach(function (k) { localStorage.removeItem(k); });
+      localStorage.setItem(RESET_KEY, String(now));
+      console.log('[VideoTrack] New 24h session started —', new Date(now).toLocaleString());
+    } else {
+      var hoursLeft = ((WINDOW_MS - (now - lastStart)) / 3600000).toFixed(1);
+      console.log('[VideoTrack] Session active — resets in ' + hoursLeft + 'h');
+    }
+  })();
+  </script>
+
   <script src="https://cdn.botpress.cloud/webchat/v3.6/inject.js"></script>
   <script src="https://files.bpcontent.cloud/2026/05/01/17/20260501175250-U19M6YD6.js" defer></script>
 
