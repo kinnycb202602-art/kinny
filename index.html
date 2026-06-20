@@ -133,6 +133,7 @@
       for (var i = 0; i < localStorage.length; i++) {
         var k = localStorage.key(i);
         if (k && (
+          k.startsWith('bp-webchat-') ||  // Botpress v3 webchat (history, -client, -sound) ← the real keys
           k.startsWith('bp/')        ||
           k.startsWith('botpress')   ||
           k.indexOf('8549d670') !== -1   // bot ID safety-net
