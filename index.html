@@ -181,13 +181,14 @@
       console.log('[VideoTrack]', text);
     }
 
-    // ── HK Timestamp ─────────────────────────────────────────
+    // ── HK Timestamp (UTC+8) ─────────────────────────────────
+    // Shifts from UTC directly using getUTC* methods so the result
+    // is always HKT regardless of the user's device timezone.
     function hkNow() {
-      const n  = new Date();
-      const hk = new Date(n.getTime() + (8 * 60 - n.getTimezoneOffset()) * 60000);
+      const hk = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const p  = x => String(x).padStart(2, '0');
-      return p(hk.getDate())+'/'+p(hk.getMonth()+1)+'/'+hk.getFullYear()
-            +' '+p(hk.getHours())+':'+p(hk.getMinutes())+':'+p(hk.getSeconds());
+      return p(hk.getUTCDate())+'/'+p(hk.getUTCMonth()+1)+'/'+hk.getUTCFullYear()
+            +' '+p(hk.getUTCHours())+':'+p(hk.getUTCMinutes())+':'+p(hk.getUTCSeconds());
     }
 
     // ── Log row to UserInputTable ────────────────────────────
