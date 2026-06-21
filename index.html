@@ -568,6 +568,86 @@
       }
     }
 
+    // ── Mobile/iPad UX helpers ───────────────────────────────
+    // Find the Botpress webchat shadow root (it renders in one).
+    function bpShadowRoot() {
+      var els = document.querySelectorAll('*');
+      for (var i = 0; i < els.length; i++) {
+        if (els[i].shadowRoot && els[i].shadowRoot.querySelector('.bpComposerInput')) {
+          return els[i].shadowRoot;
+        }
+      }
+      return null;
+    }
+    // Find the scrollable messages container inside the shadow root.
+    function bpScrollEl(sr) {
+      if (!sr) return null;
+      var ds = sr.querySelectorAll('div');
+      for (var i = 0; i < ds.length; i++) {
+        var cs = getComputedStyle(ds[i]);
+        if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+            ds[i].scrollHeight > ds[i].clientHeight + 20) {
+          return ds[i];
+        }
+      }
+      return null;
+    }
+    function scrollChatToBottom() {
+      var sc = bpScrollEl(bpShadowRoot());
+      if (sc) sc.scrollTop = sc.scrollHeight;
+    }
+    // Scroll to bottom over a few frames so late-rendered content is caught.
+    function scrollChatToBottomSoon() {
+      [0, 120, 350, 700].forEach(function (d) { setTimeout(scrollChatToBottom, d); });
+    }
+    // Collapse the on-screen keyboard by blurring the composer input.
+    function blurComposer() {
+      var sr = bpShadowRoot();
+      var ta = sr && sr.querySelector('.bpComposerInput');
+      if (ta) ta.blur();
+      // Also blur whatever is focused inside the shadow root, just in case.
+      if (sr && sr.activeElement && sr.activeElement.blur) sr.activeElement.blur();
+    }
+    var _uxWired = false;
+    function enhanceMobileUX() {
+      var sr = bpShadowRoot();
+      if (!sr || _uxWired) return;
+      _uxWired = true;
+
+      // 1) Collapse keyboard when the user sends a message.
+      //    a) Enter (without Shift) in the composer.
+      sr.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey &&
+            e.target && e.target.classList &&
+            e.target.classList.contains('bpComposerInput')) {
+          // Let Botpress send first, then drop focus to dismiss the keyboard.
+          setTimeout(blurComposer, 50);
+          scrollChatToBottomSoon();
+        }
+      }, true);
+      //    b) Tapping the Send icon (SVG aria-label="Send Message Button").
+      sr.addEventListener('click', function (e) {
+        var t = e.target;
+        var hit = t && (t.closest ? t.closest('[aria-label="Send Message Button"]') : null);
+        if (!hit && t && t.getAttribute && t.getAttribute('aria-label') === 'Send Message Button') hit = t;
+        if (hit) {
+          setTimeout(blurComposer, 50);
+          scrollChatToBottomSoon();
+        }
+      }, true);
+
+      // 2) Auto-scroll to the newest message. Pin to bottom when the user is
+      //    already near the bottom (don't yank them if they scrolled up to read).
+      var sc = bpScrollEl(sr);
+      if (sc) {
+        var mo = new MutationObserver(function () {
+          var nearBottom = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 250;
+          if (nearBottom) sc.scrollTop = sc.scrollHeight;
+        });
+        mo.observe(sc, { childList: true, subtree: true });
+      }
+    }
+
     // ── Boot ─────────────────────────────────────────────────
     window.addEventListener('load', function () {
       if (!window.botpress) {
@@ -581,8 +661,9 @@
         var container = document.getElementById('bp-embedded') || document.body;
         observeRoot(container);
         scanAll();
+        enhanceMobileUX();
         var retries = 0;
-        var t = setInterval(function(){ scanAll(); if (++retries >= 20) clearInterval(t); }, 500);
+        var t = setInterval(function(){ scanAll(); enhanceMobileUX(); if (++retries >= 20) clearInterval(t); }, 500);
       }
       window.botpress.on('ready',         onReady);
       window.botpress.on('webchat:ready', onReady);
@@ -620,6 +701,9 @@
 
         console.log('[VideoTrack] Extracted text:', text);
         readMarker(text);
+
+        // Auto-scroll to the newest incoming message (mobile/iPad UX).
+        scrollChatToBottomSoon();
       }
       window.botpress.on('message',         onMessage);
       window.botpress.on('webchat:message', onMessage);
