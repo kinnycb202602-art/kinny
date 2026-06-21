@@ -67,13 +67,14 @@
     /* ── Pain-scale quick-select widget (inline in conversation) ── */
     #vt-painscale {
       box-sizing: border-box;
-      width: 100%;
-      padding: 2px 14px 16px 52px;   /* left indent aligns under bot message bubbles */
+      align-self: stretch;
+      padding: 4px 14px 16px 14px;
     }
     #vt-painscale .vt-ps-inner {
       display: flex;
       gap: 4px;
-      max-width: 640px;
+      width: 100%;
+      max-width: 560px;
     }
     #vt-painscale .vt-ps-cell {
       flex: 1 1 0;
@@ -781,6 +782,8 @@
       }
       _psAttachTries = 0;
       if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
+      // Force full width — the viewport is a shrink-wrapping flex column.
+      if (c.clientWidth) _painScaleEl.style.width = Math.round(c.clientWidth) + 'px';
       scrollChatToBottomSoon();
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
