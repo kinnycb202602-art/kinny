@@ -724,10 +724,15 @@
     var _psAttachTries = 0;
 
     function buildPainScale(min, max) {
+      // NOTE: the widget is appended INSIDE Botpress's shadow DOM, where the
+      // document's <style> rules don't reach. So all styling is inline.
       var wrap = document.createElement('div');
       wrap.id = 'vt-painscale';
+      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
+        'padding:4px 14px 16px 14px;';
       var inner = document.createElement('div');
       inner.className = 'vt-ps-inner';
+      inner.style.cssText = 'display:flex;gap:4px;width:100%;max-width:560px;';
       var span = (max - min) || 1;
       for (var n = min; n <= max; n++) {
         (function (num) {
@@ -737,11 +742,19 @@
           cell.textContent = String(num);
           var t   = (num - min) / span;        // 0 → green, 1 → red
           var hue = Math.round(130 - t * 130);
-          cell.style.background = 'hsl(' + hue + ', 68%, 52%)';
+          cell.style.cssText = 'flex:1 1 0;min-width:0;min-height:42px;border:none;' +
+            'border-radius:8px;color:#fff;font-family:sans-serif;font-size:15px;' +
+            'font-weight:700;line-height:1;cursor:pointer;padding:0;' +
+            'box-shadow:inset 0 0 0 1px rgba(0,0,0,0.06);' +
+            '-webkit-tap-highlight-color:transparent;' +
+            'background:hsl(' + hue + ', 68%, 52%);';
           cell.addEventListener('click', function (e) {
             e.stopPropagation();
             if (cell.classList.contains('sel')) return;  // guard double-tap
             cell.classList.add('sel');
+            cell.style.outline = '3px solid #1a1a2e';
+            cell.style.outlineOffset = '-1px';
+            cell.style.transform = 'translateY(-2px)';
             try {
               if (window.botpress && typeof window.botpress.sendMessage === 'function') {
                 window.botpress.sendMessage(String(num));
