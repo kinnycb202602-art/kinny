@@ -649,8 +649,15 @@
       return null;
     }
     function scrollChatToBottom() {
-      var sc = bpScrollEl(bpShadowRoot());
+      var sr = bpShadowRoot();
+      var sc = bpScrollEl(sr) ||
+               (sr && (sr.querySelector('.bpMessageListContainer') ||
+                       sr.querySelector('.bpMessageListViewport')));
       if (sc) sc.scrollTop = sc.scrollHeight;
+      // Also nudge the painscale widget into view if present.
+      if (_painScaleEl && _painScaleEl.scrollIntoView) {
+        try { _painScaleEl.scrollIntoView({ block: 'end' }); } catch (e) {}
+      }
     }
     // Scroll to bottom over a few frames so late-rendered content is caught.
     function scrollChatToBottomSoon() {
@@ -753,27 +760,39 @@
       return wrap;
     }
 
-    // Append the strip into the message-list scroll container, as the last
-    // child so it sits right under the newest message and scrolls with it.
+    // The container holding the message rows (always present once webchat is
+    // ready, regardless of whether it currently overflows/scrolls).
+    function painScaleContainer() {
+      var sr = bpShadowRoot();
+      if (!sr) return null;
+      return sr.querySelector('.bpMessageListViewport') ||
+             sr.querySelector('.bpMessageListContainer') ||
+             bpScrollEl(sr);
+    }
+
+    // Append the strip into the message list as the last child so it sits
+    // right under the newest message and flows/scrolls with the conversation.
     function attachPainScaleInline() {
       if (!_painScaleEl) return;
-      var sc = bpScrollEl(bpShadowRoot());
-      if (!sc) {                       // shadow DOM not ready yet → retry briefly
+      var c = painScaleContainer();
+      if (!c) {                        // shadow DOM not ready yet → retry briefly
         if (_psAttachTries++ < 25) setTimeout(attachPainScaleInline, 150);
         return;
       }
       _psAttachTries = 0;
-      if (sc.lastElementChild !== _painScaleEl) sc.appendChild(_painScaleEl);
+      if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
       scrollChatToBottomSoon();
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
         _psObserver = new MutationObserver(function () {
           if (!_painScaleEl) return;
-          if (_painScaleEl.parentNode !== sc || sc.lastElementChild !== _painScaleEl) {
-            sc.appendChild(_painScaleEl);   // bounded: once it's last, no more action
+          var cc = painScaleContainer();
+          if (!cc) return;
+          if (_painScaleEl.parentNode !== cc || cc.lastElementChild !== _painScaleEl) {
+            cc.appendChild(_painScaleEl);   // bounded: once it's last, no more action
           }
         });
-        _psObserver.observe(sc, { childList: true });
+        _psObserver.observe(c, { childList: true });
       }
     }
 
