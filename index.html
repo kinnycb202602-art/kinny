@@ -680,11 +680,29 @@
       // Also blur whatever is focused inside the shadow root, just in case.
       if (sr && sr.activeElement && sr.activeElement.blur) sr.activeElement.blur();
     }
+    // Fix vertical clipping of the composer text on mobile (esp. CJK):
+    // the default input is short with a tight line-height, so tall glyphs
+    // get cut off. Inject CSS into the shadow root to add room + center it.
+    var _composerFixed = false;
+    function fixComposerInput() {
+      var sr = bpShadowRoot();
+      if (!sr || _composerFixed) return;
+      _composerFixed = true;
+      var st = document.createElement('style');
+      st.id = 'vt-composer-fix';
+      st.textContent =
+        '.bpComposerInput{line-height:1.5!important;padding-top:5px!important;' +
+        'padding-bottom:5px!important;min-height:40px!important;}' +
+        '.bpComposerInputContainer{align-items:center!important;min-height:50px!important;}';
+      sr.appendChild(st);
+    }
+
     var _uxWired = false;
     function enhanceMobileUX() {
       var sr = bpShadowRoot();
       if (!sr || _uxWired) return;
       _uxWired = true;
+      fixComposerInput();
 
       // 1) Collapse keyboard when the user sends a message.
       //    a) Enter (without Shift) in the composer.
