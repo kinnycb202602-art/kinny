@@ -795,8 +795,6 @@
       }
       _psAttachTries = 0;
       if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
-      // Force full width — the viewport is a shrink-wrapping flex column.
-      if (c.clientWidth) _painScaleEl.style.width = Math.round(c.clientWidth) + 'px';
       scrollChatToBottomSoon();
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
