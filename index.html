@@ -155,7 +155,7 @@
   <script>
   (function () {
     var RESET_KEY   = 'vt_session_started';
-    var WINDOW_MS   = 24 * 60 * 60 * 1000;    // ← 24 hours (production)
+    var WINDOW_MS   = 7 * 24 * 60 * 60 * 1000; // ← 7 days (production)
     var now         = Date.now();
     var lastStart   = parseInt(localStorage.getItem(RESET_KEY) || '0', 10);
     var needsReset  = !lastStart || (now - lastStart) > WINDOW_MS;
