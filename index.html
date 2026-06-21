@@ -64,6 +64,42 @@
     }
     .vt-img-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
+    /* ── Pain-scale quick-select widget (docked above input bar) ── */
+    #vt-painscale {
+      position: fixed;
+      z-index: 2147483600;
+      box-sizing: border-box;
+      padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.14);
+      border-top: 1px solid #e4e4e7;
+    }
+    #vt-painscale .vt-ps-inner {
+      display: flex;
+      gap: 4px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    #vt-painscale .vt-ps-cell {
+      flex: 1 1 0;
+      min-width: 0;
+      min-height: 42px;
+      border: none;
+      border-radius: 8px;
+      color: #fff;
+      font-family: sans-serif;
+      font-size: 15px;
+      font-weight: 700;
+      line-height: 1;
+      cursor: pointer;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+      transition: transform 0.08s ease, box-shadow 0.08s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #vt-painscale .vt-ps-cell:hover  { transform: translateY(-1px); }
+    #vt-painscale .vt-ps-cell:active { transform: translateY(0); }
+    #vt-painscale .vt-ps-cell.sel    { outline: 3px solid #1a1a2e; outline-offset: -1px; transform: translateY(-2px); }
+
     /* ── Lightbox ───────────────────────────────────────────── */
     #vt-lightbox {
       position: fixed;
@@ -328,6 +364,9 @@
       } else if (clean.startsWith('reviewsession:')) {
         currentReviewSession = clean.slice(14).trim();
         setStatus('ready', 'ReviewSession: ' + currentReviewSession);
+      } else if (clean.startsWith('painscale:')) {
+        // Just hide the rendered marker bubble; the widget itself is
+        // triggered from readMarker (message-event path) to avoid double-show.
       } else {
         return; // not our marker
       }
@@ -579,6 +618,14 @@
         setStatus('ready', 'ReviewSession: ' + currentReviewSession);
         console.log('[VideoTrack] ReviewSession set:', currentReviewSession);
         scheduleHideMarker('reviewsession:');
+      } else if (text.startsWith('__painscale:') && text.endsWith('__')) {
+        var spec  = text.slice(12, -2).trim();          // e.g. "0-10"
+        var parts = spec.split('-');
+        var mn = parseInt(parts[0], 10); if (isNaN(mn)) mn = 0;
+        var mx = parseInt(parts[1], 10); if (isNaN(mx)) mx = 10;
+        console.log('[VideoTrack] Pain scale widget:', mn, '-', mx);
+        scheduleHideMarker('painscale:');
+        showPainScale(mn, mx);
       }
     }
 
@@ -637,6 +684,7 @@
           // Let Botpress send first, then drop focus to dismiss the keyboard.
           setTimeout(blurComposer, 50);
           scrollChatToBottomSoon();
+          hidePainScale();   // user answered by typing → remove the scale widget
         }
       }, true);
       //    b) Tapping the Send icon (SVG aria-label="Send Message Button").
@@ -647,6 +695,7 @@
         if (hit) {
           setTimeout(blurComposer, 50);
           scrollChatToBottomSoon();
+          hidePainScale();   // user answered by typing → remove the scale widget
         }
       }, true);
 
@@ -660,6 +709,77 @@
         });
         mo.observe(sc, { childList: true, subtree: true });
       }
+    }
+
+    // ── Pain-scale quick-select widget ───────────────────────
+    // Triggered by the bot marker __painscale:MIN-MAX__ (e.g. 0-10).
+    // Renders a colored, one-tap number strip docked above the input
+    // bar; on tap it sends the number back to the bot as the reply.
+    var _painScaleEl   = null;
+    var _psReposition  = null;
+
+    function buildPainScale(min, max) {
+      hidePainScale();
+      var wrap = document.createElement('div');
+      wrap.id = 'vt-painscale';
+      var inner = document.createElement('div');
+      inner.className = 'vt-ps-inner';
+      var span = (max - min) || 1;
+      for (var n = min; n <= max; n++) {
+        (function (num) {
+          var cell = document.createElement('button');
+          cell.type = 'button';
+          cell.className = 'vt-ps-cell';
+          cell.textContent = String(num);
+          var t   = (num - min) / span;        // 0 → green, 1 → red
+          var hue = Math.round(130 - t * 130);
+          cell.style.background = 'hsl(' + hue + ', 68%, 52%)';
+          cell.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (cell.classList.contains('sel')) return;  // guard double-tap
+            cell.classList.add('sel');
+            try {
+              if (window.botpress && typeof window.botpress.sendMessage === 'function') {
+                window.botpress.sendMessage(String(num));
+                console.log('[VideoTrack] Pain scale answer sent:', num);
+              } else {
+                console.error('[VideoTrack] botpress.sendMessage unavailable');
+              }
+            } catch (err) {
+              console.error('[VideoTrack] Pain scale send error:', err);
+            }
+            setTimeout(hidePainScale, 220);
+          });
+          inner.appendChild(cell);
+        })(n);
+      }
+      wrap.appendChild(inner);
+      document.body.appendChild(wrap);
+      _painScaleEl = wrap;
+    }
+
+    function positionPainScale() {
+      if (!_painScaleEl) return;
+      var emb = document.getElementById('bp-embedded');
+      var r   = emb ? emb.getBoundingClientRect()
+                    : { left: 0, width: window.innerWidth };
+      var barTop = composerTopY();
+      _painScaleEl.style.left   = Math.round(r.left) + 'px';
+      _painScaleEl.style.width  = Math.round(r.width) + 'px';
+      _painScaleEl.style.top    = 'auto';
+      _painScaleEl.style.bottom = Math.max(0, Math.round(window.innerHeight - barTop)) + 'px';
+    }
+
+    function showPainScale(min, max) {
+      buildPainScale(min, max);
+      positionPainScale();
+      if (_psReposition) clearInterval(_psReposition);
+      _psReposition = setInterval(positionPainScale, 200);
+    }
+
+    function hidePainScale() {
+      if (_psReposition) { clearInterval(_psReposition); _psReposition = null; }
+      if (_painScaleEl)  { _painScaleEl.remove(); _painScaleEl = null; }
     }
 
     // ── Boot ─────────────────────────────────────────────────
@@ -726,6 +846,9 @@
     // ── Debug mode: show status bar when ?debug in URL ───────
     if (new URLSearchParams(window.location.search).has('debug')) {
       document.getElementById('vt-status-bar').style.display = 'flex';
+      // Manual triggers for testing the pain-scale widget without the bot:
+      //   __vtPainScale.show(0,10)  /  __vtPainScale.hide()
+      window.__vtPainScale = { show: showPainScale, hide: hidePainScale };
     }
 
     setStatus('', 'Script loaded — waiting for page...');
