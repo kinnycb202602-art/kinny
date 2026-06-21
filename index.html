@@ -496,15 +496,28 @@
 
     // Pairs of { img, btn } — updated on a 100ms interval so shadow-DOM
     // scroll (which doesn't bubble to window) is always caught.
+    // Top edge of the Botpress input bar (composer), so the enlarge button
+    // can hide behind it instead of floating on top of the input field.
+    function composerTopY() {
+      var sr = (typeof bpShadowRoot === 'function') ? bpShadowRoot() : null;
+      var c  = sr && (sr.querySelector('.bpComposerInputContainer') ||
+                      sr.querySelector('.bpComposerInput'));
+      if (c) { var rc = c.getBoundingClientRect(); if (rc.height > 0) return rc.top; }
+      return window.innerHeight;
+    }
+
     var _imgPairs = [];
     setInterval(function() {
+      var barTop = composerTopY();
       _imgPairs.forEach(function(p) {
         var r = p.img.getBoundingClientRect();
+        var btnTop = Math.round(r.bottom - 38);
         var hidden = r.width < 60 || r.height < 60 ||
-                     r.bottom <= 0 || r.top >= window.innerHeight;
+                     r.bottom <= 0 || r.top >= window.innerHeight ||
+                     (btnTop + 32) > barTop;   // button would overlap the input bar → hide behind it
         p.btn.style.display = hidden ? 'none' : 'flex';
         if (!hidden) {
-          p.btn.style.top  = Math.round(r.bottom - 38) + 'px';
+          p.btn.style.top  = btnTop + 'px';
           p.btn.style.left = Math.round(r.right  - 38) + 'px';
         }
       });
