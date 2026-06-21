@@ -360,7 +360,7 @@
       } else if (clean.startsWith('reviewsession:')) {
         currentReviewSession = clean.slice(14).trim();
         setStatus('ready', 'ReviewSession: ' + currentReviewSession);
-      } else if (clean.startsWith('painscale:')) {
+      } else if (clean.startsWith('painscale:') || clean.startsWith('confscale:')) {
         // Just hide the rendered marker bubble; the widget itself is
         // triggered from readMarker (message-event path) to avoid double-show.
       } else {
@@ -621,7 +621,15 @@
         var mx = parseInt(parts[1], 10); if (isNaN(mx)) mx = 10;
         console.log('[VideoTrack] Pain scale widget:', mn, '-', mx);
         scheduleHideMarker('painscale:');
-        showPainScale(mn, mx);
+        showPainScale(mn, mx, true);          // colored green→red
+      } else if (text.startsWith('__confscale:') && text.endsWith('__')) {
+        var cspec  = text.slice(12, -2).trim();         // e.g. "0-10"
+        var cparts = cspec.split('-');
+        var cmn = parseInt(cparts[0], 10); if (isNaN(cmn)) cmn = 0;
+        var cmx = parseInt(cparts[1], 10); if (isNaN(cmx)) cmx = 10;
+        console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
+        scheduleHideMarker('confscale:');
+        showPainScale(cmn, cmx, false);       // plain neutral buttons
       }
     }
 
@@ -723,9 +731,10 @@
     var _psObserver    = null;
     var _psAttachTries = 0;
 
-    function buildPainScale(min, max) {
+    function buildPainScale(min, max, colored) {
       // NOTE: the widget is appended INSIDE Botpress's shadow DOM, where the
       // document's <style> rules don't reach. So all styling is inline.
+      // colored=true → green→red gradient (pain); false → plain neutral (confidence).
       var wrap = document.createElement('div');
       wrap.id = 'vt-painscale';
       wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
@@ -740,14 +749,20 @@
           cell.type = 'button';
           cell.className = 'vt-ps-cell';
           cell.textContent = String(num);
-          var t   = (num - min) / span;        // 0 → green, 1 → red
-          var hue = Math.round(130 - t * 130);
+          var bg, fg;
+          if (colored) {
+            var t   = (num - min) / span;      // 0 → green, 1 → red
+            var hue = Math.round(130 - t * 130);
+            bg = 'hsl(' + hue + ', 68%, 52%)'; fg = '#fff';
+          } else {
+            bg = '#e9edf1'; fg = '#1f2937';    // plain neutral
+          }
           cell.style.cssText = 'flex:1 1 0;min-width:0;min-height:42px;border:none;' +
-            'border-radius:8px;color:#fff;font-family:sans-serif;font-size:15px;' +
+            'border-radius:8px;color:' + fg + ';font-family:sans-serif;font-size:15px;' +
             'font-weight:700;line-height:1;cursor:pointer;padding:0;' +
             'box-shadow:inset 0 0 0 1px rgba(0,0,0,0.06);' +
             '-webkit-tap-highlight-color:transparent;' +
-            'background:hsl(' + hue + ', 68%, 52%);';
+            'background:' + bg + ';';
           cell.addEventListener('click', function (e) {
             e.stopPropagation();
             if (cell.classList.contains('sel')) return;  // guard double-tap
@@ -758,12 +773,12 @@
             try {
               if (window.botpress && typeof window.botpress.sendMessage === 'function') {
                 window.botpress.sendMessage(String(num));
-                console.log('[VideoTrack] Pain scale answer sent:', num);
+                console.log('[VideoTrack] Scale answer sent:', num);
               } else {
                 console.error('[VideoTrack] botpress.sendMessage unavailable');
               }
             } catch (err) {
-              console.error('[VideoTrack] Pain scale send error:', err);
+              console.error('[VideoTrack] Scale send error:', err);
             }
             setTimeout(hidePainScale, 220);
           });
@@ -810,9 +825,9 @@
       }
     }
 
-    function showPainScale(min, max) {
+    function showPainScale(min, max, colored) {
       hidePainScale();
-      _painScaleEl = buildPainScale(min, max);
+      _painScaleEl = buildPainScale(min, max, colored !== false);
       attachPainScaleInline();
     }
 
