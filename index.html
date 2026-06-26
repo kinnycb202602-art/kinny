@@ -749,6 +749,34 @@
     var _psObserver    = null;
     var _psAttachTries = 0;
 
+    // NRS pain-scale color at position t (0..1), matching the chart image:
+    // blue(0) → green → yellow → orange → red(10).
+    function nrsColor(t) {
+      var stops = [
+        [0.00, [ 93, 160, 176]],  // blue-teal  (0 / 無痛)
+        [0.20, [147, 190, 126]],  // green      (~2)
+        [0.40, [214, 208, 107]],  // yellow-grn (~4)
+        [0.55, [240, 216,  94]],  // yellow     (~5-6)
+        [0.70, [235, 162,  76]],  // orange     (~7)
+        [0.85, [222, 110,  60]],  // red-orange (~9)
+        [1.00, [199,  64,  47]]   // red        (10 / 劇痛)
+      ];
+      if (t <= 0) return stops[0][1];
+      if (t >= 1) return stops[stops.length - 1][1];
+      for (var i = 1; i < stops.length; i++) {
+        if (t <= stops[i][0]) {
+          var a = stops[i - 1], b = stops[i];
+          var f = (t - a[0]) / (b[0] - a[0]);
+          return [
+            Math.round(a[1][0] + (b[1][0] - a[1][0]) * f),
+            Math.round(a[1][1] + (b[1][1] - a[1][1]) * f),
+            Math.round(a[1][2] + (b[1][2] - a[1][2]) * f)
+          ];
+        }
+      }
+      return stops[stops.length - 1][1];
+    }
+
     function buildPainScale(min, max, colored) {
       // NOTE: the widget is appended INSIDE Botpress's shadow DOM, where the
       // document's <style> rules don't reach. So all styling is inline.
@@ -769,9 +797,11 @@
           cell.textContent = String(num);
           var bg, fg;
           if (colored) {
-            var t   = (num - min) / span;      // 0 → green, 1 → red
-            var hue = Math.round(130 - t * 130);
-            bg = 'hsl(' + hue + ', 68%, 52%)'; fg = '#fff';
+            var c   = nrsColor((num - min) / span);   // matches NRS chart palette
+            bg = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+            // dark text on light cells (yellow/green) for readability, else white
+            var lum = (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255;
+            fg = lum > 0.62 ? '#374151' : '#fff';
           } else {
             bg = '#e9edf1'; fg = '#1f2937';    // plain neutral
           }
