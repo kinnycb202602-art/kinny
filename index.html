@@ -593,7 +593,7 @@
       console.log('[VideoTrack] Message text:', text);
 
       if (text.startsWith('__userid:') && text.endsWith('__')) {
-        currentUserId = text.slice(9, -2).trim();
+        currentUserId = text.slice(9, -2).trim().replace(/\s+/g, '');
         setStatus('ready', 'UserId: ' + currentUserId);
         console.log('[VideoTrack] UserId set:', currentUserId);
         scheduleHideMarker('userid:');
