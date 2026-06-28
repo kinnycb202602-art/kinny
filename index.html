@@ -535,8 +535,36 @@
         console.error('[VideoTrack] Video element error:', err, 'src=', v.currentSrc || v.src);
         setStatus('error', '✗ Video error (' + err + ')');
       });
-      v.addEventListener('play',  function(){ logRow('Click Play Video (HK)', hkNow()); });
-      v.addEventListener('pause', function(){ if (!v.ended) logRow('Click Pause Video (HK)', hkNow()); });
+
+      // ── Distinguish a scrub/drag (skip) from genuine play/pause ──
+      // Dragging the progress bar fires seeking → seeked, and the browser usually
+      // also emits a pause+play bracketing the seek. We log ONE "Drag Seek Video
+      // (HK)" with the from→to position, and swallow the pause/play that belong to
+      // the seek so they aren't recorded as real Play/Pause clicks.
+      var _lastSteadyT = 0, _seekFrom = null, _seekSuppress = false, _seekClear = null, _seekLog = null;
+      function _mmss(s){ s = Math.max(0, Math.round(s||0)); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); }
+      v.addEventListener('timeupdate', function(){ if (!v.seeking) _lastSteadyT = v.currentTime; });
+      v.addEventListener('seeking', function(){
+        if (_seekFrom === null) _seekFrom = _lastSteadyT;   // remember position before the drag
+        _seekSuppress = true;
+        if (_seekClear) clearTimeout(_seekClear);
+      });
+      v.addEventListener('seeked', function(){
+        _seekSuppress = true;
+        if (_seekLog) clearTimeout(_seekLog);
+        // debounce so a multi-step drag collapses into one row at the final position
+        _seekLog = setTimeout(function(){
+          var from = (_seekFrom === null ? _lastSteadyT : _seekFrom), to = v.currentTime;
+          _seekFrom = null;
+          if (Math.abs(to - from) >= 0.5)   // ignore micro/no-op seeks (e.g. initial load)
+            logRow('Drag Seek Video (HK)', hkNow() + '  (' + _mmss(from) + ' → ' + _mmss(to) + ')');
+        }, 300);
+        if (_seekClear) clearTimeout(_seekClear);
+        _seekClear = setTimeout(function(){ _seekSuppress = false; }, 450);
+      });
+
+      v.addEventListener('play',  function(){ if (_seekSuppress || v.seeking) return; logRow('Click Play Video (HK)', hkNow()); });
+      v.addEventListener('pause', function(){ if (v.ended || _seekSuppress || v.seeking) return; logRow('Click Pause Video (HK)', hkNow()); });
       v.addEventListener('ended', function(){ logRow('Video Watch End Time (HK)', hkNow()); });
     }
 
