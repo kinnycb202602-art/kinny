@@ -202,6 +202,7 @@
     let currentSession      = '';
     let currentPlacement    = 'General';
     let currentReviewSession = '';
+    let currentVideoClipNo  = '';   // which clip (1-4) the current video step is — from __currentvideoclipno:N__
 
     // ── ConversationId tracking (client-side, always matches active conversation) ──
     var _currentConvId = '';
@@ -238,6 +239,8 @@
       } else {
         fullName = variableName + ' - ' + currentPlacement;
       }
+      // distinguish each of the 4 video clips within a session/placement (Video1-4)
+      if (currentVideoClipNo) fullName += ' - Clip (' + currentVideoClipNo + ')';
       setStatus('', 'Logging: ' + fullName + '...');
       fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
         method: 'POST',
@@ -360,6 +363,9 @@
       } else if (clean.startsWith('reviewsession:')) {
         currentReviewSession = clean.slice(14).trim();
         setStatus('ready', 'ReviewSession: ' + currentReviewSession);
+      } else if (clean.startsWith('currentvideoclipno:')) {
+        currentVideoClipNo = clean.slice(19).trim();
+        setStatus('ready', 'Video clip no: ' + currentVideoClipNo);
       } else if (clean.startsWith('painscale:') || clean.startsWith('confscale:')) {
         // Just hide the rendered marker bubble; the widget itself is
         // triggered from readMarker (message-event path) to avoid double-show.
@@ -469,7 +475,7 @@
         var t = node.textContent.trim();
         if (t.startsWith('__') && t.endsWith('__')) {
           processMarker(t, node);
-        } else if (/^(userid:|session:|placement:|reviewsession:)/i.test(t)) {
+        } else if (/^(userid:|session:|placement:|reviewsession:|currentvideoclipno:)/i.test(t)) {
           processMarker(t, node);
         }
         return;
@@ -513,6 +519,22 @@
       if (trackedVideos.has(v)) return;
       trackedVideos.add(v);
       setStatus('ready', 'Video detected — listeners attached');
+      // Make the card actually playable inside the chat embed. On iOS/iPad a
+      // <video> without playsinline tries to open a fullscreen player that the
+      // webchat iframe can block → "cannot play". Force inline + visible controls.
+      try {
+        v.playsInline = true;
+        v.setAttribute('playsinline', '');
+        v.setAttribute('webkit-playsinline', '');
+        v.removeAttribute('autoplay');           // avoid blocked-autoplay failures; user taps play
+        if (!v.hasAttribute('controls')) v.controls = true;
+        v.preload = 'metadata';
+      } catch (e) { console.warn('[VideoTrack] video setup:', e && e.message); }
+      v.addEventListener('error', function(){
+        var err = v.error ? ('code ' + v.error.code) : 'unknown';
+        console.error('[VideoTrack] Video element error:', err, 'src=', v.currentSrc || v.src);
+        setStatus('error', '✗ Video error (' + err + ')');
+      });
       v.addEventListener('play',  function(){ logRow('Click Play Video (HK)', hkNow()); });
       v.addEventListener('pause', function(){ if (!v.ended) logRow('Click Pause Video (HK)', hkNow()); });
       v.addEventListener('ended', function(){ logRow('Video Watch End Time (HK)', hkNow()); });
@@ -614,6 +636,11 @@
         setStatus('ready', 'ReviewSession: ' + currentReviewSession);
         console.log('[VideoTrack] ReviewSession set:', currentReviewSession);
         scheduleHideMarker('reviewsession:');
+      } else if (text.startsWith('__currentvideoclipno:') && text.endsWith('__')) {
+        currentVideoClipNo = text.slice(21, -2).trim();
+        setStatus('ready', 'Video clip no: ' + currentVideoClipNo);
+        console.log('[VideoTrack] Video clip no set:', currentVideoClipNo);
+        scheduleHideMarker('currentvideoclipno:');
       } else if (text.startsWith('__painscale:') && text.endsWith('__')) {
         var spec  = text.slice(12, -2).trim();          // e.g. "0-10"
         var parts = spec.split('-');
