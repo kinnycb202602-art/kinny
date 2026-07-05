@@ -73,6 +73,15 @@
       -webkit-tap-highlight-color: transparent;
     }
     .vt-vid-btn:hover { background: rgba(0, 0, 0, 0.82); }
+    /* audio playback-speed pill */
+    .vt-spd-btn {
+      position: fixed; z-index: 2147483646; height: 24px; min-width: 40px; padding: 0 8px;
+      background: rgba(0, 0, 0, 0.66); border: none; border-radius: 12px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 12px; font-weight: 700; font-family: sans-serif;
+      line-height: 1; pointer-events: auto; -webkit-tap-highlight-color: transparent;
+    }
+    .vt-spd-btn:hover { background: rgba(0, 0, 0, 0.85); }
     #vt-vfs { position: fixed; inset: 0; z-index: 2147483647; background: #000; overflow: hidden; }
     #vt-vfs .vt-vfs-x {
       position: absolute; top: calc(env(safe-area-inset-top, 0px) + 10px); right: 14px; z-index: 3;
@@ -568,7 +577,7 @@
       var v = _vfs.v, portrait = window.innerHeight >= window.innerWidth;
       if (portrait) {
         v.setAttribute('style', 'position:absolute;top:50%;left:50%;width:' + window.innerHeight +
-          'px;height:' + window.innerWidth + 'px;transform:translate(-50%,-50%) rotate(90deg);' +
+          'px;height:' + window.innerWidth + 'px;transform:translate(-50%,-50%) rotate(-90deg);' +
           'object-fit:contain;background:#000;');
       } else {
         v.setAttribute('style', 'position:absolute;top:50%;left:50%;width:100vw;height:100vh;' +
@@ -676,6 +685,7 @@
       v.addEventListener('ended', function(){ logRow('Video Watch End Time (HK)', hkNow()); });
     }
 
+    var _spdRates = [1, 1.25, 1.5, 0.75];   // cycles on tap
     function attachToAudio(a) {
       if (trackedAudios.has(a)) return;
       trackedAudios.add(a);
@@ -683,6 +693,24 @@
       a.addEventListener('play',  function(){ logAudioRow('Click Play Audio (HK)', hkNow()); });
       a.addEventListener('pause', function(){ if (!a.ended) logAudioRow('Click Pause Audio (HK)', hkNow()); });
       a.addEventListener('ended', function(){ logAudioRow('Audio Listen End Time (HK)', hkNow()); });
+
+      // Playback-speed pill (native mobile audio controls have no speed option).
+      var spd = document.createElement('button');
+      spd.className = 'vt-spd-btn';
+      spd.type = 'button';
+      spd.title = 'Playback speed';
+      var idx = 0;
+      function fmt(r){ return (r === 1 ? '1' : String(r)) + '×'; }   // 1×, 1.25×, …
+      spd.textContent = fmt(_spdRates[0]);
+      spd.addEventListener('click', function (e) {
+        e.stopPropagation();
+        idx = (idx + 1) % _spdRates.length;
+        var r = _spdRates[idx];
+        try { a.playbackRate = r; } catch (err) {}
+        spd.textContent = fmt(r);
+      });
+      document.body.appendChild(spd);
+      _audPairs.push({ aud: a, btn: spd });
     }
 
     var _imgBtnSVG = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M1 6V1H6M10 1H15V6M15 10V15H10M6 15H1V10" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -700,6 +728,7 @@
     }
 
     var _imgPairs = [];
+    var _audPairs = [];   // {aud, btn} speed pills
     setInterval(function() {
       var barTop = composerTopY();
       _imgPairs.forEach(function(p) {
@@ -723,6 +752,18 @@
         if (!hidden) {
           p.btn.style.top  = Math.round(r.top + 6) + 'px';
           p.btn.style.left = Math.round(r.right - 42) + 'px';
+        }
+      });
+      // audio speed pill — sits just above the audio bar's right end
+      _audPairs.forEach(function(p) {
+        var r = p.aud.getBoundingClientRect();
+        var top = Math.round(r.top - 28);
+        var hidden = r.width < 60 || r.bottom <= 0 ||
+                     r.top >= window.innerHeight || (top + 24) > barTop;
+        p.btn.style.display = hidden ? 'none' : 'flex';
+        if (!hidden) {
+          p.btn.style.top  = top + 'px';
+          p.btn.style.left = Math.round(r.right - p.btn.offsetWidth) + 'px';
         }
       });
     }, 100);
