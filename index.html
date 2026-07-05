@@ -515,10 +515,38 @@
       walkNode(document.getElementById('bp-embedded') || document.body);
     }
 
+    // ── Landscape orientation when a video is enlarged (fullscreen) ──
+    // Android Chrome: lock to landscape while any element is fullscreen.
+    // iOS: no orientation-lock API, but its native fullscreen player rotates
+    // to landscape on its own; the webkit* listeners below are harmless there.
+    function lockLandscape() {
+      try {
+        var o = screen.orientation;
+        if (o && o.lock) { var p = o.lock('landscape'); if (p && p.catch) p.catch(function(){}); }
+      } catch (e) {}
+    }
+    function unlockOrientation() {
+      try { var o = screen.orientation; if (o && o.unlock) o.unlock(); } catch (e) {}
+    }
+    var _fsWired = false;
+    function wireFullscreenLandscape() {
+      if (_fsWired) return; _fsWired = true;
+      function onFs() {
+        var fs = document.fullscreenElement || document.webkitFullscreenElement;
+        if (fs) lockLandscape(); else unlockOrientation();
+      }
+      document.addEventListener('fullscreenchange', onFs);
+      document.addEventListener('webkitfullscreenchange', onFs);
+    }
+
     function attachToVideo(v) {
       if (trackedVideos.has(v)) return;
       trackedVideos.add(v);
       setStatus('ready', 'Video detected — listeners attached');
+      wireFullscreenLandscape();
+      // iOS native fullscreen player uses these element-level events.
+      v.addEventListener('webkitbeginfullscreen', lockLandscape);
+      v.addEventListener('webkitendfullscreen', unlockOrientation);
       // Make the card actually playable inside the chat embed. On iOS/iPad a
       // <video> without playsinline tries to open a fullscreen player that the
       // webchat iframe can block → "cannot play". Force inline + visible controls.
