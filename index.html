@@ -64,6 +64,22 @@
     }
     .vt-img-btn:hover { background: rgba(0, 0, 0, 0.8); }
 
+    /* iOS landscape-fullscreen button on videos + rotated overlay */
+    .vt-vid-btn {
+      position: fixed; z-index: 2147483646; width: 36px; height: 36px;
+      background: rgba(0, 0, 0, 0.62); border: none; border-radius: 8px;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 19px; line-height: 1; pointer-events: auto;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .vt-vid-btn:hover { background: rgba(0, 0, 0, 0.82); }
+    #vt-vfs { position: fixed; inset: 0; z-index: 2147483647; background: #000; overflow: hidden; }
+    #vt-vfs .vt-vfs-x {
+      position: absolute; top: calc(env(safe-area-inset-top, 0px) + 10px); right: 14px; z-index: 3;
+      background: rgba(0,0,0,0.5); color: #fff; border: none; border-radius: 8px;
+      width: 42px; height: 42px; font-size: 20px; line-height: 1; cursor: pointer;
+    }
+
     /* ── Pain-scale quick-select widget (inline in conversation) ── */
     #vt-painscale {
       box-sizing: border-box;
@@ -539,6 +555,57 @@
       document.addEventListener('webkitfullscreenchange', onFs);
     }
 
+    // iOS has no orientation-lock API, and its native fullscreen video stays
+    // portrait when the phone is rotation-locked. So on iOS we present the video
+    // in a custom overlay that CSS-rotates it 90° to fill the screen in landscape.
+    var IS_IOS = /iP(hone|od|ad)/.test(navigator.platform || '') ||
+                 (/Mac/.test(navigator.platform || '') && navigator.maxTouchPoints > 1) ||
+                 /iPhone|iPad|iPod/.test(navigator.userAgent || '');
+    var _vidPairs = [];   // {vid, btn} — positioned by the shared interval below
+    var _vfs = null;      // active landscape overlay state
+    function _vfsLayout() {
+      if (!_vfs) return;
+      var v = _vfs.v, portrait = window.innerHeight >= window.innerWidth;
+      if (portrait) {
+        v.setAttribute('style', 'position:absolute;top:50%;left:50%;width:' + window.innerHeight +
+          'px;height:' + window.innerWidth + 'px;transform:translate(-50%,-50%) rotate(90deg);' +
+          'object-fit:contain;background:#000;');
+      } else {
+        v.setAttribute('style', 'position:absolute;top:50%;left:50%;width:100vw;height:100vh;' +
+          'transform:translate(-50%,-50%);object-fit:contain;background:#000;');
+      }
+    }
+    function _vfsEsc(e) { if (e.key === 'Escape') closeVideoLandscape(); }
+    function openVideoLandscape(v) {
+      if (_vfs) return;
+      var overlay = document.createElement('div');
+      overlay.id = 'vt-vfs';
+      var ph = document.createComment('vt-vph');          // remember where to put the video back
+      if (v.parentNode) v.parentNode.insertBefore(ph, v);
+      var prevStyle = v.getAttribute('style') || '';
+      overlay.appendChild(v);
+      var x = document.createElement('button');
+      x.className = 'vt-vfs-x'; x.textContent = '✕'; x.setAttribute('aria-label', 'Close');
+      overlay.appendChild(x);
+      document.body.appendChild(overlay);
+      _vfs = { overlay: overlay, v: v, ph: ph, prevStyle: prevStyle };
+      _vfsLayout();
+      window.addEventListener('resize', _vfsLayout);
+      window.addEventListener('orientationchange', _vfsLayout);
+      document.addEventListener('keydown', _vfsEsc);
+      x.addEventListener('click', closeVideoLandscape);
+      try { if (v.play) { var pr = v.play(); if (pr && pr.catch) pr.catch(function(){}); } } catch (e) {}
+    }
+    function closeVideoLandscape() {
+      var s = _vfs; if (!s) return; _vfs = null;
+      window.removeEventListener('resize', _vfsLayout);
+      window.removeEventListener('orientationchange', _vfsLayout);
+      document.removeEventListener('keydown', _vfsEsc);
+      s.v.setAttribute('style', s.prevStyle);
+      if (s.ph && s.ph.parentNode) { s.ph.parentNode.insertBefore(s.v, s.ph); s.ph.remove(); }
+      s.overlay.remove();
+    }
+
     function attachToVideo(v) {
       if (trackedVideos.has(v)) return;
       trackedVideos.add(v);
@@ -547,6 +614,19 @@
       // iOS native fullscreen player uses these element-level events.
       v.addEventListener('webkitbeginfullscreen', lockLandscape);
       v.addEventListener('webkitendfullscreen', unlockOrientation);
+      // On iOS, add our own landscape-fullscreen button (native fullscreen can't
+      // be forced to landscape when the phone is rotation-locked in portrait).
+      if (IS_IOS) {
+        try { v.setAttribute('controlsList', 'nofullscreen'); } catch (e) {}
+        var vbtn = document.createElement('button');
+        vbtn.className = 'vt-vid-btn';
+        vbtn.innerHTML = '&#10530;';   // ⤢ diagonal expand
+        vbtn.title = 'Fullscreen (landscape)';
+        vbtn.setAttribute('aria-label', 'Fullscreen landscape');
+        document.body.appendChild(vbtn);
+        _vidPairs.push({ vid: v, btn: vbtn });
+        vbtn.addEventListener('click', function (e) { e.stopPropagation(); openVideoLandscape(v); });
+      }
       // Make the card actually playable inside the chat embed. On iOS/iPad a
       // <video> without playsinline tries to open a fullscreen player that the
       // webchat iframe can block → "cannot play". Force inline + visible controls.
@@ -632,6 +712,17 @@
         if (!hidden) {
           p.btn.style.top  = btnTop + 'px';
           p.btn.style.left = Math.round(r.right  - 38) + 'px';
+        }
+      });
+      // iOS landscape button sits at the video's top-right (native controls are at the bottom)
+      _vidPairs.forEach(function(p) {
+        var r = p.vid.getBoundingClientRect();
+        var hidden = r.width < 80 || r.height < 60 || r.bottom <= 40 ||
+                     r.top >= window.innerHeight - 20 || r.top + 42 > barTop;
+        p.btn.style.display = hidden ? 'none' : 'flex';
+        if (!hidden) {
+          p.btn.style.top  = Math.round(r.top + 6) + 'px';
+          p.btn.style.left = Math.round(r.right - 42) + 'px';
         }
       });
     }, 100);
@@ -1035,6 +1126,8 @@
       // Manual triggers for testing the pain-scale widget without the bot:
       //   __vtPainScale.show(0,10)  /  __vtPainScale.hide()
       window.__vtPainScale = { show: showPainScale, hide: hidePainScale };
+      // Test the landscape video overlay: __vtVideoLandscape.open(videoEl) / .close()
+      window.__vtVideoLandscape = { open: openVideoLandscape, close: closeVideoLandscape, isIOS: IS_IOS };
     }
 
     setStatus('', 'Script loaded — waiting for page...');
