@@ -75,10 +75,10 @@
     .vt-vid-btn:hover { background: rgba(0, 0, 0, 0.82); }
     /* audio playback-speed pill */
     .vt-spd-btn {
-      position: fixed; z-index: 2147483646; height: 24px; min-width: 40px; padding: 0 8px;
-      background: rgba(0, 0, 0, 0.66); border: none; border-radius: 12px;
+      position: fixed; z-index: 2147483646; height: 22px; min-width: 38px; padding: 0 7px;
+      background: rgba(0, 0, 0, 0.55); border: none; border-radius: 11px;
       cursor: pointer; display: flex; align-items: center; justify-content: center;
-      color: #fff; font-size: 12px; font-weight: 700; font-family: sans-serif;
+      color: #fff; font-size: 11px; font-weight: 700; font-family: sans-serif;
       line-height: 1; pointer-events: auto; -webkit-tap-highlight-color: transparent;
     }
     .vt-spd-btn:hover { background: rgba(0, 0, 0, 0.85); }
@@ -754,16 +754,18 @@
           p.btn.style.left = Math.round(r.right - 42) + 'px';
         }
       });
-      // audio speed pill — sits just above the audio bar's right end
+      // audio speed pill — sits INSIDE the play bar, vertically centred at the
+      // right end (in the empty space after the time) so it reads as part of it.
       _audPairs.forEach(function(p) {
         var r = p.aud.getBoundingClientRect();
-        var top = Math.round(r.top - 28);
-        var hidden = r.width < 60 || r.bottom <= 0 ||
-                     r.top >= window.innerHeight || (top + 24) > barTop;
+        var h = p.btn.offsetHeight || 22;
+        var top = Math.round(r.top + r.height / 2 - h / 2);
+        var hidden = r.width < 140 || r.bottom <= 0 ||
+                     r.top >= window.innerHeight || (top + h) > barTop;
         p.btn.style.display = hidden ? 'none' : 'flex';
         if (!hidden) {
           p.btn.style.top  = top + 'px';
-          p.btn.style.left = Math.round(r.right - p.btn.offsetWidth) + 'px';
+          p.btn.style.left = Math.round(r.right - p.btn.offsetWidth - 10) + 'px';
         }
       });
     }, 100);
