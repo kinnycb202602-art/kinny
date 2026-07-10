@@ -612,27 +612,13 @@
       trackedVideos.add(v);
       setStatus('ready', 'Video detected — listeners attached');
       wireFullscreenLandscape();
-      if (IS_IOS) {
-        // One expand button, YouTube-style. iOS can't force its NATIVE fullscreen
-        // player into landscape when the phone is rotation-locked, and Safari
-        // ignores controlsList — so we used to add a 2nd custom button, which was
-        // confusing. Instead we now HIJACK the video's own native expand button:
-        // when the user taps it, iOS fires 'webkitbeginfullscreen'; we cancel the
-        // native player and present our rotated landscape overlay instead. Result:
-        // the single, familiar expand control opens straight into landscape.
-        var _hijackFS = false;
-        v.addEventListener('webkitbeginfullscreen', function () {
-          _hijackFS = true;
-          try { if (v.webkitExitFullscreen) v.webkitExitFullscreen(); } catch (e) {}
-        });
-        v.addEventListener('webkitendfullscreen', function () {
-          if (_hijackFS) { _hijackFS = false; openVideoLandscape(v); }
-        });
-      } else {
-        // Desktop / Android: native fullscreen + orientation-lock (see wireFullscreenLandscape).
-        v.addEventListener('webkitbeginfullscreen', lockLandscape);
-        v.addEventListener('webkitendfullscreen', unlockOrientation);
-      }
+      // One native expand button, YouTube-style. iOS opens Apple's native player
+      // (which auto-rotates to landscape unless the phone is rotation-locked);
+      // Android/desktop additionally get an orientation-lock via these listeners.
+      // No custom overlay and no second button — keeps it simple and avoids the
+      // stacked-layer confusion that a hijacked/custom fullscreen path caused.
+      v.addEventListener('webkitbeginfullscreen', lockLandscape);
+      v.addEventListener('webkitendfullscreen', unlockOrientation);
       // Make the card actually playable inside the chat embed. On iOS/iPad a
       // <video> without playsinline tries to open a fullscreen player that the
       // webchat iframe can block → "cannot play". Force inline + visible controls.
