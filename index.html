@@ -639,6 +639,26 @@
         if (!v.hasAttribute('controls')) v.controls = true;
         v.preload = 'metadata';
       } catch (e) { console.warn('[VideoTrack] video setup:', e && e.message); }
+
+      // ── Show a thumbnail (first frame) ───────────────────────
+      // Botpress videos have no `poster`, and preload="metadata" alone leaves
+      // many browsers (esp. iOS Safari) showing a blank/black box until play.
+      // Nudging currentTime a hair past 0 once metadata is ready forces the
+      // browser to decode + paint that frame, which then shows as the thumbnail.
+      // The 0→0.1s move is below the 0.5s threshold in the seek handler below,
+      // so it is NOT logged as a user "Drag Seek".
+      function paintFirstFrame() {
+        if (v._vtThumbDone) return;
+        try {
+          if (v.readyState >= 1 && v.currentTime === 0 && !v._vtPlayed) {
+            v._vtThumbDone = true;
+            v.currentTime = 0.1;
+          }
+        } catch (e) { /* seeking may be blocked pre-gesture on some browsers */ }
+      }
+      v.addEventListener('loadedmetadata', paintFirstFrame);
+      if (v.readyState >= 1) paintFirstFrame();     // metadata already loaded
+      v.addEventListener('play', function () { v._vtPlayed = true; });
       v.addEventListener('error', function(){
         var err = v.error ? ('code ' + v.error.code) : 'unknown';
         console.error('[VideoTrack] Video element error:', err, 'src=', v.currentSrc || v.src);
