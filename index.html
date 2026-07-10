@@ -382,7 +382,8 @@
       } else if (clean.startsWith('currentvideoclipno:')) {
         currentVideoClipNo = clean.slice(19).trim();
         setStatus('ready', 'Video clip no: ' + currentVideoClipNo);
-      } else if (clean.startsWith('painscale:') || clean.startsWith('confscale:')) {
+      } else if (clean.startsWith('painscale:') || clean.startsWith('confscale:') ||
+                 /^[^:]+:(singlechoice|multiplechoice)(:.*)?$/.test(clean)) {
         // Just hide the rendered marker bubble; the widget itself is
         // triggered from readMarker (message-event path) to avoid double-show.
       } else {
@@ -806,6 +807,34 @@
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
         showPainScale(cmn, cmx, true);        // colored, same as pain scale
+      } else if (text.startsWith('__') && text.endsWith('__') &&
+                 /^__[^:]+:(singlechoice|multiplechoice)(:.*)?__$/.test(text)) {
+        // __KEY:singlechoice:o1|o2|…__  /  __KEY:multiplechoice:o1|o2|…__
+        // (options segment is optional — a marker missing it still gets hidden,
+        // it just won't render any buttons since there's nothing to choose from)
+        var body = text.slice(2, -2);
+        var c1 = body.indexOf(':');
+        var key = body.slice(0, c1);                    // e.g. extype / extime
+        var rest = body.slice(c1 + 1);
+        var c2 = rest.indexOf(':');
+        var ctype, opts;
+        if (c2 === -1) {
+          ctype = rest;                                 // no options segment present
+          opts = [];
+        } else {
+          ctype = rest.slice(0, c2);                     // singlechoice | multiplechoice
+          opts = rest.slice(c2 + 1).split(/[|｜]/)       // split on ASCII or full-width pipe
+                     .map(function (s) { return s.trim(); })
+                     .filter(function (s) { return s; });
+        }
+        console.log('[VideoTrack] Choice widget:', key, ctype, opts);
+        scheduleHideMarker(key.toLowerCase() + ':');
+        if (opts.length) {
+          showChoice(ctype, opts);
+        } else {
+          console.warn('[VideoTrack] Choice marker "' + key + '" has no options — hiding it ' +
+            'but no widget will render. Fix in Studio: __' + key + ':' + ctype + ':Option1|Option2__');
+        }
       }
     }
 
@@ -1061,6 +1090,105 @@
       _psAttachTries = 0;
     }
 
+    // ── Single / multiple choice widget ──────────────────────
+    // Triggered by __KEY:singlechoice:o1|o2|…__  or  __KEY:multiplechoice:o1|o2|…__
+    // Single choice: one tap sends the option text. Multiple choice: toggle
+    // options, then tap 確認 to send them joined with "/" (e.g. 上午/下午).
+    // Rendered inline (reuses the pain-scale inline attach) → all styles inline
+    // because it lives inside Botpress's shadow DOM.
+    function sendChoice(str) {
+      try {
+        if (window.botpress && typeof window.botpress.sendMessage === 'function') {
+          window.botpress.sendMessage(String(str));
+          console.log('[VideoTrack] Choice sent:', str);
+        } else {
+          console.error('[VideoTrack] botpress.sendMessage unavailable');
+        }
+      } catch (err) { console.error('[VideoTrack] Choice send error:', err); }
+    }
+    function buildChoice(type, options) {
+      var multi = (type === 'multiplechoice');
+      var wrap = document.createElement('div');
+      wrap.id = 'vt-choice';
+      // Left padding aligns the buttons with the bot message bubble's left edge:
+      // the bubble is inset by the avatar (--bpSpacing-7) + row gap (--bpSpacing-2).
+      // These Botpress vars resolve inside its shadow DOM (where this widget lives).
+      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
+        'padding:4px 14px 16px calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px));';
+      var inner = document.createElement('div');
+      // Word-cloud layout: options wrap onto as many rows as needed so every
+      // choice is visible at once (no horizontal scrolling on small screens).
+      inner.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
+      var OFF = 'background:#e6f2ec;color:#1f3a30;border-color:#c3ddcf;';
+      var ON  = 'background:#2f7d63;color:#fff;border-color:#2f7d63;';
+      var BASE = 'border:1px solid #c3ddcf;border-radius:12px;padding:11px 18px;' +
+                 'font-family:sans-serif;font-size:16px;font-weight:600;cursor:pointer;' +
+                 'line-height:1.2;-webkit-tap-highlight-color:transparent;' +
+                 'white-space:nowrap;flex:0 0 auto;';
+      var selected = [];
+      var confirmBtn = null;
+      function paint(b, on) { b.style.cssText = BASE + (on ? ON : OFF); }
+      function updateConfirm() {
+        if (!confirmBtn) return;
+        var n = selected.length;
+        confirmBtn.disabled = (n === 0);
+        confirmBtn.style.opacity = n === 0 ? '0.45' : '1';
+        confirmBtn.style.cursor  = n === 0 ? 'default' : 'pointer';
+        confirmBtn.textContent = n ? ('確認 (' + n + ')') : '確認';
+      }
+      options.forEach(function (opt) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = opt;
+        paint(b, false);
+        if (multi) {
+          b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            var i = selected.indexOf(opt);
+            if (i >= 0) { selected.splice(i, 1); paint(b, false); }
+            else { selected.push(opt); paint(b, true); }
+            updateConfirm();
+          });
+        } else {
+          b.addEventListener('click', function (e) {
+            e.stopPropagation();
+            if (wrap._done) return; wrap._done = true;
+            paint(b, true);
+            sendChoice(opt);
+            setTimeout(hidePainScale, 220);
+          });
+        }
+        inner.appendChild(b);
+      });
+      wrap.appendChild(inner);
+      if (multi) {
+        var row = document.createElement('div');
+        // Confirm sits under the first option (left-aligned), not off to the right.
+        row.style.cssText = 'display:flex;justify-content:flex-start;margin-top:10px;';
+        confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.style.cssText = 'border:none;border-radius:12px;padding:11px 24px;' +
+          'font-family:sans-serif;font-size:16px;font-weight:700;background:#2f7d63;color:#fff;' +
+          'line-height:1.2;-webkit-tap-highlight-color:transparent;';
+        confirmBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (!selected.length || wrap._done) return; wrap._done = true;
+          sendChoice(selected.join('/'));         // e.g. 上午/下午 (string, not array)
+          setTimeout(hidePainScale, 220);
+        });
+        updateConfirm();
+        row.appendChild(confirmBtn);
+        wrap.appendChild(row);
+      }
+      return wrap;
+    }
+    function showChoice(type, options) {
+      if (!options || !options.length) return;
+      hidePainScale();                       // one inline widget at a time
+      _painScaleEl = buildChoice(type, options);
+      attachPainScaleInline();
+    }
+
     // ── Boot ─────────────────────────────────────────────────
     window.addEventListener('load', function () {
       if (!window.botpress) {
@@ -1130,6 +1258,10 @@
       window.__vtPainScale = { show: showPainScale, hide: hidePainScale };
       // Test the landscape video overlay: __vtVideoLandscape.open(videoEl) / .close()
       window.__vtVideoLandscape = { open: openVideoLandscape, close: closeVideoLandscape, isIOS: IS_IOS };
+      // Test choice widgets:
+      //   __vtChoice.show('singlechoice',['A','B','C'])
+      //   __vtChoice.show('multiplechoice',['上午','下午','晚上'])
+      window.__vtChoice = { show: showChoice, hide: hidePainScale };
     }
 
     setStatus('', 'Script loaded — waiting for page...');
