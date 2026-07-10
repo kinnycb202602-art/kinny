@@ -612,21 +612,26 @@
       trackedVideos.add(v);
       setStatus('ready', 'Video detected — listeners attached');
       wireFullscreenLandscape();
-      // iOS native fullscreen player uses these element-level events.
-      v.addEventListener('webkitbeginfullscreen', lockLandscape);
-      v.addEventListener('webkitendfullscreen', unlockOrientation);
-      // On iOS, add our own landscape-fullscreen button (native fullscreen can't
-      // be forced to landscape when the phone is rotation-locked in portrait).
       if (IS_IOS) {
-        try { v.setAttribute('controlsList', 'nofullscreen'); } catch (e) {}
-        var vbtn = document.createElement('button');
-        vbtn.className = 'vt-vid-btn';
-        vbtn.innerHTML = '&#10530;';   // ⤢ diagonal expand
-        vbtn.title = 'Fullscreen (landscape)';
-        vbtn.setAttribute('aria-label', 'Fullscreen landscape');
-        document.body.appendChild(vbtn);
-        _vidPairs.push({ vid: v, btn: vbtn });
-        vbtn.addEventListener('click', function (e) { e.stopPropagation(); openVideoLandscape(v); });
+        // One expand button, YouTube-style. iOS can't force its NATIVE fullscreen
+        // player into landscape when the phone is rotation-locked, and Safari
+        // ignores controlsList — so we used to add a 2nd custom button, which was
+        // confusing. Instead we now HIJACK the video's own native expand button:
+        // when the user taps it, iOS fires 'webkitbeginfullscreen'; we cancel the
+        // native player and present our rotated landscape overlay instead. Result:
+        // the single, familiar expand control opens straight into landscape.
+        var _hijackFS = false;
+        v.addEventListener('webkitbeginfullscreen', function () {
+          _hijackFS = true;
+          try { if (v.webkitExitFullscreen) v.webkitExitFullscreen(); } catch (e) {}
+        });
+        v.addEventListener('webkitendfullscreen', function () {
+          if (_hijackFS) { _hijackFS = false; openVideoLandscape(v); }
+        });
+      } else {
+        // Desktop / Android: native fullscreen + orientation-lock (see wireFullscreenLandscape).
+        v.addEventListener('webkitbeginfullscreen', lockLandscape);
+        v.addEventListener('webkitendfullscreen', unlockOrientation);
       }
       // Make the card actually playable inside the chat embed. On iOS/iPad a
       // <video> without playsinline tries to open a fullscreen player that the
