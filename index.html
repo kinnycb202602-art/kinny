@@ -680,6 +680,8 @@
       if (trackedAudios.has(a)) return;
       trackedAudios.add(a);
       setStatus('ready', 'Audio detected — listeners attached');
+      // Hide the browser's native playback-speed button from the audio controls.
+      try { a.setAttribute('controlsList', 'noplaybackrate'); } catch (e) {}
       a.addEventListener('play',  function(){ logAudioRow('Click Play Audio (HK)', hkNow()); });
       a.addEventListener('pause', function(){ if (!a.ended) logAudioRow('Click Pause Audio (HK)', hkNow()); });
       a.addEventListener('ended', function(){ logAudioRow('Audio Listen End Time (HK)', hkNow()); });
@@ -803,7 +805,7 @@
         var cmx = parseInt(cparts[1], 10); if (isNaN(cmx)) cmx = 10;
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
-        showPainScale(cmn, cmx, false);       // plain neutral buttons
+        showPainScale(cmn, cmx, true);        // colored, same as pain scale
       }
     }
 
