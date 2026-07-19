@@ -955,7 +955,10 @@
       st.textContent =
         '.bpComposerInput{line-height:1.5!important;padding-top:5px!important;' +
         'padding-bottom:5px!important;min-height:40px!important;}' +
-        '.bpComposerInputContainer{align-items:center!important;min-height:50px!important;}';
+        '.bpComposerInputContainer{align-items:center!important;min-height:50px!important;}' +
+        // Footer: drop the Botpress link, show plain copyright text instead.
+        '.bpComposerFooter a{display:none!important;}' +
+        '.bpComposerFooter::after{content:"Kinny © 2026\\00A0\\00A0\\00A0Power by Botpress";}';
       sr.appendChild(st);
     }
 
