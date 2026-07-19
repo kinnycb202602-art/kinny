@@ -37,6 +37,32 @@
     #vt-status-bar #vt-time { color: #555; font-size: 11px; }
     #bp-embedded { flex: 1; width: 100%; min-height: 0; }
 
+    /* ── Kick-start "Start" button ────────────────────────────
+       Sits where the composer input bar would be (which is hidden until the
+       conversation starts) and replaces it on the welcome screen. */
+    #vt-start-btn {
+      position: fixed;
+      left: 50%;
+      bottom: 20px;
+      transform: translateX(-50%);
+      z-index: 2147483646;
+      padding: 16px 64px;
+      font-family: sans-serif;
+      font-size: 17px;
+      font-weight: 600;
+      color: #fff;
+      background: #2f5e5b;            /* matches the Kinny header teal */
+      border: none;
+      border-radius: 30px;
+      box-shadow: 0 6px 18px rgba(47, 94, 91, 0.4);
+      cursor: pointer;
+      display: none;                 /* shown by JS on the welcome screen */
+      -webkit-tap-highlight-color: transparent;
+    }
+    #vt-start-btn.show { display: block; }
+    #vt-start-btn:hover  { background: #274e4b; }
+    #vt-start-btn:active { transform: translateX(-50%) scale(0.97); }
+
     /* ── Status bar visibility ───────────────────────────────
        Hidden by default for end users.
        To show it: add ?debug to the URL, e.g.
@@ -158,6 +184,11 @@
   </div>
 
   <div id="bp-embedded"></div>
+
+  <!-- Kick-start button: the composer is locked by default, so the user taps
+       this once to send "Start" and begin the conversation. Hidden by JS the
+       moment the conversation begins. -->
+  <button id="vt-start-btn" type="button">Start</button>
 
   <!-- Lightbox -->
   <div id="vt-lightbox">
@@ -382,6 +413,12 @@
       } else if (clean.startsWith('currentvideoclipno:')) {
         currentVideoClipNo = clean.slice(19).trim();
         setStatus('ready', 'Video clip no: ' + currentVideoClipNo);
+      } else if (clean.startsWith('sessionmenu:')) {
+        // Trigger the session menu from the DOM path too — the bot 'message'
+        // event is unreliable here, and this observer path always fires.
+        // showSessionMenu dedupes by key, so no double-show if both paths run.
+        var smSpec = clean.slice(12);
+        showSessionMenu(parseSessionMenu(smSpec), smSpec.replace(/\s+/g, ''));
       } else if (clean.startsWith('painscale:') || clean.startsWith('confscale:') ||
                  /^[^:]+:(singlechoice|multiplechoice)(:.*)?$/.test(clean)) {
         // Just hide the rendered marker bubble; the widget itself is
@@ -492,7 +529,7 @@
         var t = node.textContent.trim();
         if (t.startsWith('__') && t.endsWith('__')) {
           processMarker(t, node);
-        } else if (/^(userid:|session:|placement:|reviewsession:|currentvideoclipno:)/i.test(t)) {
+        } else if (/^(userid:|session:|placement:|reviewsession:|currentvideoclipno:|sessionmenu:)/i.test(t)) {
           processMarker(t, node);
         }
         return;
@@ -530,6 +567,9 @@
 
     function scanAll() {
       walkNode(document.getElementById('bp-embedded') || document.body);
+      // Re-evaluate the composer lock on every DOM change (new bot message,
+      // widget shown/removed, composer re-render).
+      if (typeof refreshComposerLock === 'function') refreshComposerLock();
     }
 
     // ── Landscape orientation when a video is enlarged (fullscreen) ──
@@ -817,7 +857,13 @@
         var cmx = parseInt(cparts[1], 10); if (isNaN(cmx)) cmx = 10;
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
-        showPainScale(cmn, cmx, true);        // colored, same as pain scale
+        showPainScale(cmn, cmx, true, 'blue'); // confidence: light-blue → dark-blue gradient
+      } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
+        // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
+        var smSpec = text.slice(14, -2);
+        console.log('[VideoTrack] Session menu marker:', smSpec);
+        scheduleHideMarker('sessionmenu:');
+        showSessionMenu(parseSessionMenu(smSpec), smSpec.replace(/\s+/g, ''));
       } else if (text.startsWith('__') && text.endsWith('__') &&
                  /^__[^:]+:(singlechoice|multiplechoice)(:.*)?__$/.test(text)) {
         // __KEY:singlechoice:o1|o2|…__  /  __KEY:multiplechoice:o1|o2|…__
@@ -913,12 +959,304 @@
       sr.appendChild(st);
     }
 
+    // ── Composer lock (disable free-text typing) ─────────────
+    // The Botpress text box stays VISIBLE at all times but is locked so the
+    // user can't type. It's unlocked only when the bot's current step expects
+    // a free-text reply (i.e. the bot showed no choice/scale widget). It re-
+    // locks immediately after the user sends a typed reply.
+    var _composerEnabled   = false;   // default: locked
+    var _composerGuardWired = false;
+
+    function composerInputEl() {
+      var sr = bpShadowRoot();
+      return sr && sr.querySelector('.bpComposerInput');
+    }
+    // Push the current lock state onto the live input element. Re-applied
+    // periodically because Botpress re-renders the composer.
+    function applyComposerState() {
+      var ta = composerInputEl();
+      if (!ta) return;
+      if (_composerEnabled) {
+        ta.readOnly = false;
+        ta.removeAttribute('data-vt-locked');
+        ta.style.removeProperty('opacity');
+        ta.style.removeProperty('cursor');
+      } else {
+        ta.readOnly = true;
+        ta.setAttribute('data-vt-locked', '1');
+        ta.style.setProperty('opacity', '0.55', 'important');
+        ta.style.setProperty('cursor', 'not-allowed', 'important');
+        var sr = bpShadowRoot();
+        if (sr && sr.activeElement === ta && ta.blur) ta.blur();
+      }
+    }
+    function setComposerEnabled(on) {
+      var next = !!on;
+      if (next === _composerEnabled) { applyComposerState(); return; }
+      _composerEnabled = next;
+      console.log('[VideoTrack] Composer', next ? 'ENABLED (free text)' : 'LOCKED');
+      applyComposerState();
+    }
+    // Hard guard: swallow any typing/paste while locked, before Botpress's own
+    // handlers see it. One capturing listener on the shadow root (survives
+    // input re-renders since the root persists).
+    function wireComposerGuard() {
+      var sr = bpShadowRoot();
+      if (!sr || _composerGuardWired) return;
+      _composerGuardWired = true;
+      ['keydown', 'keypress', 'beforeinput', 'paste', 'drop'].forEach(function (evt) {
+        sr.addEventListener(evt, function (e) {
+          if (_composerEnabled) return;
+          var t = e.target;
+          if (t && t.classList && t.classList.contains('bpComposerInput')) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
+      });
+    }
+
+    // ── Composer lock policy (DOM-driven) ─────────────────────
+    // The Botpress "message" event is unreliable for our purpose, so we drive
+    // the lock straight off DOM state, which is authoritative:
+    //   • locked until the conversation has started (Start button);
+    //   • locked while a scale/choice widget is on screen (answer by tapping);
+    //   • locked briefly right after the user sends, until the bot replies;
+    //   • otherwise UNLOCKED — a plain bot step with no choice = free text.
+    var _postSendLock  = false;
+    var _msgCountAtSend = 0;
+    var _postSendAt    = 0;
+    function countMsgRows() {
+      var c = painScaleContainer();
+      return c ? c.children.length : 0;
+    }
+    // The composer only opens when the current step actually wants a typed reply.
+    // We judge that from the LATEST bot (incoming) message. Botpress tags each
+    // message row with data-direction (incoming/outgoing/system) and its own
+    // data-disable-input flag — the latter is Botpress telling us whether the
+    // composer should be off for that step. We honour that flag rather than
+    // hard-coding media: a video/audio step that expects a typed reply (e.g.
+    // "watch this, then type OK") is data-disable-input="false" and opens, while
+    // a real no-input step is data-disable-input="true" and stays locked.
+    // A native choice (buttons/dropdown) always locks, since Botpress leaves the
+    // input enabled next to choice buttons in this bot.
+    function latestIncomingRow() {
+      var c = painScaleContainer();
+      if (!c) return null;
+      var rows = c.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+      return rows.length ? rows[rows.length - 1] : null;
+    }
+    function latestBotStepAllowsTyping() {
+      var row = latestIncomingRow();
+      if (!row) return false;                                        // no bot message yet
+      if (row.getAttribute('data-disable-input') === 'true') return false;   // Botpress says: no input here
+      if (row.querySelector('.bpMessageBlocksButton, .bpMessageBlocksDropdownButtonContainer')) return false; // choice
+      return true;                                                   // step accepts a typed reply
+    }
+    // ── "Bot idle" detection ──────────────────────────────────
+    // We only open the composer once the bot has FINISHED its turn and is
+    // waiting on the user — not mid-way through a run of messages. "Idle" =
+    // the message list has been unchanged for IDLE_MS and no typing indicator
+    // is showing. This keeps the box shut during informational messages that
+    // are about to be followed by a choice/widget, so the user can't fire off
+    // an unrelated message into the gap.
+    var IDLE_MS          = 2500;   // must exceed Botpress's inter-message gap (~1.5–2s) so the
+                                   // box never opens in the pause between two bot messages
+    var _msgSig          = '';
+    var _lastMsgChangeAt = 0;
+    var _idleTimer       = null;
+    function msgSignature() {
+      var c = painScaleContainer();
+      if (!c) return '';
+      var rows = c.querySelectorAll('.bpMessageContainer, .bpMessageBlocksBubble');
+      var last = rows[rows.length - 1];
+      return rows.length + '|' + (last ? (last.textContent || '').length : 0);
+    }
+    function botBusy() {
+      var s = bpShadowRoot();
+      return !!(s && s.querySelector('.bpTypingIndicatorContainer'));
+    }
+    function botIsIdle() {
+      var sig = msgSignature();
+      if (sig !== _msgSig) {                 // new/streaming message → reset the idle clock
+        _msgSig = sig;
+        _lastMsgChangeAt = Date.now();
+      }
+      var idle = !botBusy() && (Date.now() - _lastMsgChangeAt) > IDLE_MS;
+      if (!idle && !_idleTimer) {
+        // Not idle yet — guarantee a re-check when the quiet window should
+        // elapse, even if no further DOM mutation fires. Without this, a late
+        // sub-render that bumps the clock past an already-scheduled one-shot
+        // timer would leave the composer stuck locked with nothing re-checking.
+        var remaining = IDLE_MS - (Date.now() - _lastMsgChangeAt) + 80;
+        _idleTimer = setTimeout(function () { _idleTimer = null; refreshComposerLock(); },
+                                Math.max(300, remaining));
+      }
+      return idle;
+    }
+    function refreshComposerLock() {
+      if (_postSendLock) {
+        var grown    = countMsgRows() > _msgCountAtSend + 1;   // user echo + a bot reply
+        var timedOut = (Date.now() - _postSendAt) > 2500;      // fallback if reply is slow/undetected
+        if (grown || timedOut) _postSendLock = false;
+      }
+      var idle = botIsIdle();
+      var enable = _convStarted && !_postSendLock && idle &&
+                   !_painScaleEl &&               // our marker widget (pain/confidence scale, choice)
+                   latestBotStepAllowsTyping();   // latest bot message is a plain-text free-text prompt
+      setComposerEnabled(enable);
+      updateStartUI();
+    }
+    // Call after any user-initiated send (typed, Start, or widget tap): lock now,
+    // re-open once the bot responds.
+    function beginPostSendLock() {
+      _postSendLock   = true;
+      _msgCountAtSend = countMsgRows();
+      _postSendAt     = Date.now();
+      refreshComposerLock();
+      setTimeout(refreshComposerLock, 2600);   // ensure the fallback clears even without further mutations
+    }
+
+    // ── Kick-start "Start" button ─────────────────────────────
+    // On the welcome/empty screen the composer bar is HIDDEN and this button
+    // takes its place. Tapping it sends "Start" to kick off the flow; from then
+    // on the composer bar is shown and the button is gone.
+    var _convStarted   = false;
+    var _readyAt       = 0;
+    var _startClickedAt = 0;
+    function startBtnEl() { return document.getElementById('vt-start-btn'); }
+    function showStartButton() {
+      var b = startBtnEl();
+      if (b) b.classList.add('show');
+    }
+    function hideStartButton() {
+      var b = startBtnEl();
+      if (b) b.classList.remove('show');
+    }
+    // Show/hide the whole Botpress composer bar (.bpComposerContainer) via a
+    // style injected into the shadow root (survives Botpress re-renders).
+    // Writes only on change — otherwise re-setting textContent every scan would
+    // retrigger the MutationObserver in a loop.
+    var _composerBarHidden = null;
+    function setComposerBarHidden(hidden) {
+      hidden = !!hidden;
+      var s = bpShadowRoot();
+      if (!s) return;
+      var st = s.querySelector('#vt-hide-composer');
+      if (!st) { st = document.createElement('style'); st.id = 'vt-hide-composer'; s.appendChild(st); }
+      if (_composerBarHidden === hidden) return;
+      _composerBarHidden = hidden;
+      st.textContent = hidden ? '.bpComposerContainer{display:none!important;}' : '';
+    }
+    // Welcome layout: Botpress anchors the welcome marquee to the BOTTOM
+    // (justify-content:flex-end); override to centre it, and drop the Start
+    // button just below it so the whole splash sits mid-screen.
+    var _welcomeCentered = null;
+    function setWelcomeLayout(on) {
+      on = !!on;
+      var s = bpShadowRoot();
+      if (!s) return;
+      var st = s.querySelector('#vt-welcome-center');
+      if (!st) { st = document.createElement('style'); st.id = 'vt-welcome-center'; s.appendChild(st); }
+      if (_welcomeCentered !== on) {
+        _welcomeCentered = on;
+        st.textContent = on ? '.bpMessageListViewport{justify-content:center!important;}' : '';
+      }
+    }
+    function layoutWelcomeStart() {
+      var s = bpShadowRoot();
+      var b = startBtnEl();
+      if (!s || !b) return;
+      var mq = s.querySelector('.bpMessageListMarqueeContainer');
+      if (!mq) return;
+      var r = mq.getBoundingClientRect();
+      b.style.bottom = 'auto';
+      b.style.top = Math.round(r.bottom + 16) + 'px';   // just under the centred marquee
+    }
+    // A real conversation is underway once an actual (bot or user) message is on
+    // screen. The welcome splash has none — and a lone "Today" date separator is
+    // data-direction="system", which we deliberately ignore. This also flips back
+    // to the welcome state when the user hits Botpress's reset button (messages
+    // cleared → no real messages again).
+    function hasRealMessages() {
+      var s = bpShadowRoot();
+      if (!s) return false;
+      return s.querySelectorAll('.bpMessageContainer[data-direction="incoming"], ' +
+                                '.bpMessageContainer[data-direction="outgoing"]').length > 0;
+    }
+    // Decide between "welcome screen" (Start button replaces the bar) and
+    // "in conversation" (bar shown, no button). Derived from live state each call
+    // so a reset returns us to the welcome layout.
+    function updateStartUI() {
+      var active;
+      if (hasRealMessages()) {
+        active = true;
+      } else if (_startClickedAt && (Date.now() - _startClickedAt) < 4000) {
+        active = true;                       // just tapped Start; the echo bubble hasn't rendered yet
+      } else if (_readyAt && (Date.now() - _readyAt) < 500) {
+        return;                              // too early to decide (a resuming chat may still render)
+      } else {
+        active = false;                      // welcome / empty (fresh load or after reset)
+      }
+      _convStarted = active;
+      if (active) {
+        hideStartButton();
+        setComposerBarHidden(false);
+        setWelcomeLayout(false);
+      } else {
+        // Back at welcome (fresh load or Restart button). Clear any widget left
+        // over from the previous conversation, otherwise its stale _painScaleEl
+        // keeps the composer locked after the next Start. Done inline (not via
+        // hidePainScale) to avoid re-entering refreshComposerLock.
+        if (_painScaleEl) {
+          if (_psObserver) { _psObserver.disconnect(); _psObserver = null; }
+          try { _painScaleEl.remove(); } catch (e) {}
+          _painScaleEl = null; _psAttachTries = 0; _menuKey = '';
+        }
+        setComposerBarHidden(true);
+        setWelcomeLayout(true);
+        showStartButton();
+        layoutWelcomeStart();
+        requestAnimationFrame(layoutWelcomeStart);   // re-measure after the centring reflows
+        _menuAnswered = {};   // fresh conversation → session menus may show again
+      }
+    }
+    function markConversationStarted() {
+      _convStarted = true;
+      hideStartButton();
+      setComposerBarHidden(false);
+    }
+    window.addEventListener('resize', function () {
+      if (!_convStarted) layoutWelcomeStart();
+    });
+    (function wireStartButton() {
+      var b = startBtnEl();
+      if (!b) return;
+      b.addEventListener('click', function () {
+        _startClickedAt = Date.now();
+        hidePainScale();   // clear any stale widget left from a prior conversation
+        hideStartButton();
+        try {
+          if (window.botpress && typeof window.botpress.sendMessage === 'function') {
+            window.botpress.sendMessage('Start');
+            console.log('[VideoTrack] Kick-start message sent: Start');
+          } else {
+            console.error('[VideoTrack] botpress.sendMessage unavailable for kick-start');
+          }
+        } catch (err) { console.error('[VideoTrack] Kick-start error:', err); }
+        markConversationStarted();
+        beginPostSendLock();   // stay locked until the bot's first reply
+      });
+    })();
+
     var _uxWired = false;
     function enhanceMobileUX() {
       var sr = bpShadowRoot();
       if (!sr || _uxWired) return;
       _uxWired = true;
       fixComposerInput();
+      wireComposerGuard();
+      applyComposerState();   // enforce the default locked state on the input
 
       // 1) Collapse keyboard when the user sends a message.
       //    a) Enter (without Shift) in the composer.
@@ -930,6 +1268,7 @@
           setTimeout(blurComposer, 50);
           scrollChatToBottomSoon();
           hidePainScale();   // user answered by typing → remove the scale widget
+          beginPostSendLock();   // re-lock until the bot replies
         }
       }, true);
       //    b) Tapping the Send icon (SVG aria-label="Send Message Button").
@@ -941,6 +1280,7 @@
           setTimeout(blurComposer, 50);
           scrollChatToBottomSoon();
           hidePainScale();   // user answered by typing → remove the scale widget
+          beginPostSendLock();   // re-lock until the bot replies
         }
       }, true);
 
@@ -993,10 +1333,51 @@
       return stops[stops.length - 1][1];
     }
 
-    function buildPainScale(min, max, colored) {
+    function hslToRgb(h, s, l) {
+      h /= 360;
+      function h2(p, q, t) {
+        if (t < 0) t += 1; if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+      }
+      if (s === 0) { var v = Math.round(l * 255); return [v, v, v]; }
+      var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+      return [
+        Math.round(h2(p, q, h + 1 / 3) * 255),
+        Math.round(h2(p, q, h) * 255),
+        Math.round(h2(p, q, h - 1 / 3) * 255)
+      ];
+    }
+    // Confidence palette: one consistent teal-blue hue, anchored on the value-5
+    // color rgb(93,160,176). We keep that color's hue + saturation and vary ONLY
+    // lightness — a light tint at 0, the anchor at 5, a deeper shade at 10 — so
+    // the whole 0..10 ramp reads as the same colour getting darker (no navy).
+    function confBlueColor(t) {
+      t = Math.max(0, Math.min(1, t));
+      var H = 191.566, S = 0.344397;   // hue/sat of rgb(93,160,176)
+      var Llight = 0.90, Lmid = 0.527455, Ldark = 0.26;   // Lmid reproduces the anchor exactly
+      var L = t <= 0.5 ? Llight + (Lmid - Llight) * (t / 0.5)
+                       : Lmid  + (Ldark - Lmid) * ((t - 0.5) / 0.5);
+      return hslToRgb(H, S, L);
+    }
+    // Pick dark or white text for the highest WCAG contrast on a given cell bg,
+    // so mid-blue cells stay readable (a fixed luminance cutoff dips to ~3.3:1
+    // in the midtones; choosing by real contrast keeps every step ≥ ~4.2:1).
+    function bestTextOn(c) {
+      function lin(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+      function L(x) { return 0.2126 * lin(x[0]) + 0.7152 * lin(x[1]) + 0.0722 * lin(x[2]); }
+      function ratio(a, b) { var l1 = L(a), l2 = L(b), hi = Math.max(l1, l2), lo = Math.min(l1, l2); return (hi + 0.05) / (lo + 0.05); }
+      var dark = [31, 41, 55];   // #1f2937
+      return ratio(c, dark) >= ratio(c, [255, 255, 255]) ? '#1f2937' : '#fff';
+    }
+
+    function buildPainScale(min, max, colored, palette) {
       // NOTE: the widget is appended INSIDE Botpress's shadow DOM, where the
       // document's <style> rules don't reach. So all styling is inline.
-      // colored=true → green→red gradient (pain); false → plain neutral (confidence).
+      // colored=true → gradient; false → plain neutral.
+      //   palette 'blue' → confidence (light→dark blue); otherwise NRS green→red (pain).
       var wrap = document.createElement('div');
       wrap.id = 'vt-painscale';
       wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
@@ -1013,11 +1394,18 @@
           cell.textContent = String(num);
           var bg, fg;
           if (colored) {
-            var c   = nrsColor((num - min) / span);   // matches NRS chart palette
-            bg = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
-            // dark text on light cells (yellow/green) for readability, else white
-            var lum = (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255;
-            fg = lum > 0.62 ? '#374151' : '#fff';
+            var t = (num - min) / span;
+            if (palette === 'blue') {
+              var c = confBlueColor(t);                          // confidence: light→dark blue
+              bg = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+              fg = bestTextOn(c);                                // max-contrast dark/white
+            } else {
+              var cc  = nrsColor(t);                             // pain: NRS green→red palette
+              bg = 'rgb(' + cc[0] + ',' + cc[1] + ',' + cc[2] + ')';
+              // dark text on light cells (yellow/green) for readability, else white
+              var lum = (0.299 * cc[0] + 0.587 * cc[1] + 0.114 * cc[2]) / 255;
+              fg = lum > 0.62 ? '#374151' : '#fff';
+            }
           } else {
             bg = '#e9edf1'; fg = '#1f2937';    // plain neutral
           }
@@ -1044,6 +1432,7 @@
             } catch (err) {
               console.error('[VideoTrack] Scale send error:', err);
             }
+            beginPostSendLock();   // answered a scale → lock until the bot replies
             setTimeout(hidePainScale, 220);
           });
           inner.appendChild(cell);
@@ -1089,16 +1478,19 @@
       }
     }
 
-    function showPainScale(min, max, colored) {
+    function showPainScale(min, max, colored, palette) {
       hidePainScale();
-      _painScaleEl = buildPainScale(min, max, colored !== false);
+      _painScaleEl = buildPainScale(min, max, colored !== false, palette);
       attachPainScaleInline();
+      refreshComposerLock();   // widget on screen → typing locked
     }
 
     function hidePainScale() {
       if (_psObserver) { _psObserver.disconnect(); _psObserver = null; }
       if (_painScaleEl) { _painScaleEl.remove(); _painScaleEl = null; }
       _psAttachTries = 0;
+      _menuKey = '';
+      if (typeof refreshComposerLock === 'function') refreshComposerLock();
     }
 
     // ── Single / multiple choice widget ──────────────────────
@@ -1116,6 +1508,7 @@
           console.error('[VideoTrack] botpress.sendMessage unavailable');
         }
       } catch (err) { console.error('[VideoTrack] Choice send error:', err); }
+      beginPostSendLock();   // answered a choice → lock until the bot replies
     }
     function buildChoice(type, options) {
       var multi = (type === 'multiplechoice');
@@ -1198,6 +1591,112 @@
       hidePainScale();                       // one inline widget at a time
       _painScaleEl = buildChoice(type, options);
       attachPainScaleInline();
+      refreshComposerLock();   // widget on screen → typing locked
+    }
+
+    // ── Session-menu widget ──────────────────────────────────
+    // Triggered by the bot sending two raw numbers; the FRONT-END does the
+    // enable/disable logic:
+    //   __sessionmenu:current=C;finished=F__
+    // Renders (up to) two rows — 🚀 開始新進度 and 🎒 溫習舊內容 — each a header
+    // label followed by "第 n 節" buttons on the same line. Enabled buttons are
+    // tappable and send just the number; disabled ones are greyed. Logic:
+    //   • 開始新進度: sessions finished+1 … current; ONLY finished+1 is enabled
+    //     (the next one you may start), the rest are shown but disabled.
+    //   • 溫習舊內容: sessions 1 … finished, all enabled.
+    //   A group with no sessions is omitted entirely.
+    function parseSessionMenu(spec) {
+      var p = {};
+      spec.split(/[;,]/).forEach(function (kv) {
+        var eq = kv.indexOf('=');
+        if (eq < 0) return;
+        var k = kv.slice(0, eq).trim().toLowerCase();
+        var v = parseInt(kv.slice(eq + 1).trim(), 10);
+        if (!isNaN(v)) p[k] = v;
+      });
+      var current = p.current  || 0;                 // current_session (highest unlocked)
+      var fin     = p.finished || 0;                 // largest_finished_session
+      var groups = [];
+      var g1 = [];
+      for (var n = fin + 1; n <= current; n++) {
+        g1.push({ num: n, on: (n === fin + 1) });    // only the immediate next session is startable
+      }
+      if (g1.length) groups.push({ header: '🚀 開始新進度：', items: g1 });
+      var g2 = [];
+      for (var m = 1; m <= fin; m++) {
+        g2.push({ num: m, on: true });               // every finished session is reviewable
+      }
+      if (g2.length) groups.push({ header: '🎒 溫習舊內容：', items: g2 });
+      return groups;
+    }
+    function buildSessionMenu(groups) {
+      var wrap = document.createElement('div');
+      wrap.id = 'vt-sessionmenu';
+      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
+        'padding:4px 14px 16px calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px));';
+      // Buttons match the exercise (上午/下午) choice pills: 16px, rounded,
+      // light-green when tappable, solid green on tap, grey when disabled.
+      // Button text is not bold; the group title above is bold.
+      var BASE = 'border:1px solid #c3ddcf;border-radius:12px;padding:11px 18px;' +
+                 'font-family:sans-serif;font-size:16px;font-weight:400;line-height:1.2;' +
+                 '-webkit-tap-highlight-color:transparent;white-space:nowrap;flex:0 0 auto;';
+      var ENA = 'background:#e6f2ec;color:#1f3a30;cursor:pointer;';                 // tappable
+      var SEL = 'background:#2f7d63;color:#fff;border-color:#2f7d63;cursor:pointer;'; // on tap
+      var DIS = 'background:#f0f2f4;color:#aeb6bd;border-color:#e6eaed;cursor:not-allowed;';
+      groups.forEach(function (g) {
+        var group = document.createElement('div');
+        group.style.cssText = 'margin-bottom:16px;';
+        if (g.header) {
+          var h = document.createElement('div');   // title on its own line
+          h.textContent = g.header;
+          h.style.cssText = 'font-family:sans-serif;font-size:16px;font-weight:700;' +
+                            'color:#1f3a30;margin-bottom:8px;';
+          group.appendChild(h);
+        }
+        var btnRow = document.createElement('div');  // buttons on the next line, wrapping
+        btnRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
+        g.items.forEach(function (it) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = '第 ' + it.num + ' 節';
+          if (it.on) {
+            b.style.cssText = BASE + ENA;
+            (function (num) {
+              b.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (wrap._done) return; wrap._done = true;
+                if (_menuKey) _menuAnswered[_menuKey] = true;   // answered → don't let the lingering marker resurrect it
+                b.style.cssText = BASE + SEL;      // selected feedback (like the exercise widget)
+                sendChoice(String(num));           // send just the number
+                setTimeout(hidePainScale, 220);
+              });
+            })(it.num);
+          } else {
+            b.disabled = true;
+            b.style.cssText = BASE + DIS;
+          }
+          btnRow.appendChild(b);
+        });
+        group.appendChild(btnRow);
+        wrap.appendChild(group);
+      });
+      return wrap;
+    }
+    var _menuKey = '';
+    var _menuAnswered = {};
+    function showSessionMenu(groups, key) {
+      if (!groups || !groups.length) return;
+      key = key || '';
+      // Re-appears on re-trigger while UNANSWERED (the marker lingers in the DOM
+      // and the observer re-fires), but once the user taps a session it stays
+      // hidden — the click handler records the key in _menuAnswered.
+      if (key && _menuAnswered[key]) return;
+      if (_painScaleEl && _menuKey && _menuKey === key) return;   // already showing this exact menu
+      hidePainScale();
+      _menuKey = key;
+      _painScaleEl = buildSessionMenu(groups);
+      attachPainScaleInline();
+      refreshComposerLock();   // widget on screen → typing locked
     }
 
     // ── Boot ─────────────────────────────────────────────────
@@ -1210,15 +1709,30 @@
 
       function onReady() {
         setStatus('ready', 'Webchat ready — watching for video');
+        if (!_readyAt) _readyAt = Date.now();
         var container = document.getElementById('bp-embedded') || document.body;
         observeRoot(container);
         scanAll();
         enhanceMobileUX();
         var retries = 0;
-        var t = setInterval(function(){ scanAll(); enhanceMobileUX(); if (++retries >= 20) clearInterval(t); }, 500);
+        var t = setInterval(function(){ scanAll(); enhanceMobileUX(); refreshComposerLock(); if (++retries >= 20) clearInterval(t); }, 500);
+        // Keep re-evaluating the welcome/Start-button layout a bit longer, since
+        // the composer/marquee can render slightly after 'ready' fires.
+        var st = 0; var t2 = setInterval(function(){ updateStartUI(); if (++st >= 12) clearInterval(t2); }, 250);
       }
       window.botpress.on('ready',         onReady);
       window.botpress.on('webchat:ready', onReady);
+
+      // Best-effort direction check so the user's own outgoing text is never
+      // mistaken for a bot reply. Unknown → treated as a bot message.
+      function looksLikeUserMessage(msg) {
+        var d = msg.direction || (msg.payload && msg.payload.direction) ||
+                (msg.message && msg.message.direction) || '';
+        if (d) return /out|user|visitor|guest/i.test(String(d));
+        if (msg.isBot === true || msg.authorRole === 'bot') return false;
+        if (msg.authorId != null) return /user|visitor|guest/i.test(String(msg.authorId));
+        return false;
+      }
 
       // ── Read markers from message event payload ─────────────
       function onMessage(msg) {
@@ -1254,11 +1768,22 @@
         console.log('[VideoTrack] Extracted text:', text);
         readMarker(text);
 
+        // A bot message means the conversation is underway → drop the Start
+        // button and let the DOM-driven policy set the composer lock.
+        if (!looksLikeUserMessage(msg)) {
+          markConversationStarted();
+          refreshComposerLock();
+        }
+
         // Auto-scroll to the newest incoming message (mobile/iPad UX).
         scrollChatToBottomSoon();
       }
       window.botpress.on('message',         onMessage);
       window.botpress.on('webchat:message', onMessage);
+      // Belt-and-suspenders: any user send starts the conversation and locks
+      // the composer until the bot replies.
+      window.botpress.on('messageSent',         function () { markConversationStarted(); beginPostSendLock(); });
+      window.botpress.on('webchat:messageSent', function () { markConversationStarted(); beginPostSendLock(); });
     });
 
     // ── Debug mode: show status bar when ?debug in URL ───────
@@ -1273,6 +1798,18 @@
       //   __vtChoice.show('singlechoice',['A','B','C'])
       //   __vtChoice.show('multiplechoice',['上午','下午','晚上'])
       window.__vtChoice = { show: showChoice, hide: hidePainScale };
+      // Test the composer lock: __vtComposer.unlock() / __vtComposer.lock()
+      window.__vtComposer = { lock: function(){ setComposerEnabled(false); },
+                              unlock: function(){ setComposerEnabled(true); } };
+      // Test the session menu: __vtMenu.show('current=3;finished=2')
+      window.__vtMenu = { show: function(spec){ showSessionMenu(parseSessionMenu(spec), spec.replace(/\s+/g,'')); },
+                          hide: hidePainScale };
+      // Diagnostic: why is the composer locked right now?
+      window.__vtWhy = function(){ return {
+        convStarted:_convStarted, postSendLock:_postSendLock, idle:botIsIdle(),
+        painScale:!!_painScaleEl, allowsTyping:latestBotStepAllowsTyping(),
+        enabled:_composerEnabled, sinceLastMsg:(Date.now()-_lastMsgChangeAt), sig:_msgSig
+      }; };
     }
 
     setStatus('', 'Script loaded — waiting for page...');
