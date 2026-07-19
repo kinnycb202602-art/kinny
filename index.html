@@ -997,6 +997,24 @@
       console.log('[VideoTrack] Composer', next ? 'ENABLED (free text)' : 'LOCKED');
       applyComposerState();
     }
+    // Placeholder hint: when the current step needs a TAP on an option (our
+    // scale/choice/session-menu widget, or a native Botpress choice) rather than
+    // typing, show "請點擊上面選項"; otherwise keep the default placeholder.
+    var SELECT_PLACEHOLDER = '請點擊上面選項';
+    var _defaultPlaceholder = null;
+    function selectionActive() {
+      if (_painScaleEl) return true;                       // our widget
+      var row = latestIncomingRow();
+      return !!(row && row.querySelector('.bpMessageBlocksButton, .bpMessageBlocksDropdownButtonContainer'));
+    }
+    function applyComposerPlaceholder() {
+      var ta = composerInputEl();
+      if (!ta) return;
+      var cur = ta.getAttribute('placeholder') || '';
+      if (_defaultPlaceholder === null && cur && cur !== SELECT_PLACEHOLDER) _defaultPlaceholder = cur;
+      var want = selectionActive() ? SELECT_PLACEHOLDER : (_defaultPlaceholder || cur);
+      if (cur !== want) ta.setAttribute('placeholder', want);   // guarded → no mutation loop
+    }
     // Hard guard: swallow any typing/paste while locked, before Botpress's own
     // handlers see it. One capturing listener on the shadow root (survives
     // input re-renders since the root persists).
@@ -1060,8 +1078,7 @@
     // is showing. This keeps the box shut during informational messages that
     // are about to be followed by a choice/widget, so the user can't fire off
     // an unrelated message into the gap.
-    var IDLE_MS          = 2500;   // must exceed Botpress's inter-message gap (~1.5–2s) so the
-                                   // box never opens in the pause between two bot messages
+    var IDLE_MS          = 900;   // wait after the bot settles before opening the box
     var _msgSig          = '';
     var _lastMsgChangeAt = 0;
     var _idleTimer       = null;
@@ -1105,6 +1122,7 @@
                    !_painScaleEl &&               // our marker widget (pain/confidence scale, choice)
                    latestBotStepAllowsTyping();   // latest bot message is a plain-text free-text prompt
       setComposerEnabled(enable);
+      applyComposerPlaceholder();
       updateStartUI();
     }
     // Call after any user-initiated send (typed, Start, or widget tap): lock now,
