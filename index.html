@@ -976,18 +976,31 @@
     function applyComposerState() {
       var ta = composerInputEl();
       if (!ta) return;
+      var sr = bpShadowRoot();
+      var mic = sr && sr.querySelector('.bpComposerVoiceButton');   // voice-input button (mobile)
       if (_composerEnabled) {
         ta.readOnly = false;
         ta.removeAttribute('data-vt-locked');
         ta.style.removeProperty('opacity');
         ta.style.removeProperty('cursor');
+        if (mic) {
+          mic.style.removeProperty('pointer-events');
+          mic.style.removeProperty('filter');
+          mic.style.removeProperty('cursor');
+        }
       } else {
         ta.readOnly = true;
         ta.setAttribute('data-vt-locked', '1');
         ta.style.setProperty('opacity', '0.55', 'important');
         ta.style.setProperty('cursor', 'not-allowed', 'important');
-        var sr = bpShadowRoot();
         if (sr && sr.activeElement === ta && ta.blur) ta.blur();
+        if (mic) {   // disable the mic on the same rule as the text box
+          mic.style.setProperty('pointer-events', 'none', 'important');
+          // filter: opacity() dims only when the mic is actually shown (mobile) —
+          // it can't reveal a mic Botpress keeps hidden (opacity 0) on desktop.
+          mic.style.setProperty('filter', 'grayscale(1) opacity(0.55)', 'important');
+          mic.style.setProperty('cursor', 'not-allowed', 'important');
+        }
       }
     }
     function setComposerEnabled(on) {
@@ -1027,6 +1040,19 @@
           if (_composerEnabled) return;
           var t = e.target;
           if (t && t.classList && t.classList.contains('bpComposerInput')) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+          }
+        }, true);
+      });
+      // Also swallow taps on the mic (voice input) while locked, wherever its
+      // click handler lives — capture phase stops it reaching Botpress.
+      ['click', 'pointerdown', 'mousedown', 'touchstart'].forEach(function (evt) {
+        sr.addEventListener(evt, function (e) {
+          if (_composerEnabled) return;
+          var vb = sr.querySelector('.bpComposerVoiceButton');
+          var t = e.target;
+          if (vb && (vb === t || vb.contains(t))) {
             e.preventDefault();
             e.stopImmediatePropagation();
           }
