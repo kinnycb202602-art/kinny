@@ -188,7 +188,7 @@
   <!-- Kick-start button: the composer is locked by default, so the user taps
        this once to send "Start" and begin the conversation. Hidden by JS the
        moment the conversation begins. -->
-  <button id="vt-start-btn" type="button">Start</button>
+  <button id="vt-start-btn" type="button">開始</button>
 
   <!-- Lightbox -->
   <div id="vt-lightbox">
@@ -519,6 +519,15 @@
       observer.observe(root, { childList: true, subtree: true });
     }
 
+    // English Botpress UI strings → Chinese (e.g. the Restart-conversation
+    // dialog). Matched exactly against a text node's trimmed content.
+    var UI_STRINGS = {
+      'Create New Conversation': '開始新對話',
+      'New conversation': '開始新對話',
+      'This will clear the current conversation and start a new one.': '這會清除目前的對話並開始一段新對話。',
+      'Cancel': '取消'
+    };
+
     function walkNode(node) {
       if (!node) return;
 
@@ -527,6 +536,10 @@
       // we check both the raw format AND the rendered prefix:value format.
       if (node.nodeType === 3) {
         var t = node.textContent.trim();
+        if (UI_STRINGS[t] !== undefined) {
+          if (node.textContent !== UI_STRINGS[t]) node.textContent = UI_STRINGS[t];
+          return;
+        }
         if (t.startsWith('__') && t.endsWith('__')) {
           processMarker(t, node);
         } else if (/^(userid:|session:|placement:|reviewsession:|currentvideoclipno:|sessionmenu:)/i.test(t)) {
@@ -958,7 +971,14 @@
         '.bpComposerInputContainer{align-items:center!important;min-height:50px!important;}' +
         // Footer: drop the Botpress link, show plain copyright text instead.
         '.bpComposerFooter a{display:none!important;}' +
-        '.bpComposerFooter::after{content:"Kinny © 2026\\00A0\\00A0\\00A0Power by Botpress";}';
+        '.bpComposerFooter::after{content:"Kinny © 2026\\00A0\\00A0\\00A0Power by Botpress";}' +
+        // Mobile only: narrow the left avatar gap + side padding and widen the
+        // bubbles so text/images spread wider on small screens.
+        '@media (max-width:600px){' +
+          '.bpMessageListViewport{padding-left:6px!important;padding-right:6px!important;}' +
+          '.bpMessageContainer{gap:4px!important;}' +
+          '.bpMessageBlocksBubble{max-width:95%!important;}' +
+        '}';
       sr.appendChild(st);
     }
 
@@ -1285,8 +1305,8 @@
         hideStartButton();
         try {
           if (window.botpress && typeof window.botpress.sendMessage === 'function') {
-            window.botpress.sendMessage('Start');
-            console.log('[VideoTrack] Kick-start message sent: Start');
+            window.botpress.sendMessage('開始');
+            console.log('[VideoTrack] Kick-start message sent: 開始');
           } else {
             console.error('[VideoTrack] botpress.sendMessage unavailable for kick-start');
           }
