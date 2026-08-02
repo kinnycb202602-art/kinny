@@ -190,6 +190,10 @@
        moment the conversation begins. -->
   <button id="vt-start-btn" type="button">開始</button>
 
+  <!-- No custom read-aloud button: Botpress's own speaker (mute/unmute) icon in
+       the header is the single control. A second button here covered up the
+       new-conversation button. See the TTS block in the script below. -->
+
   <!-- Lightbox -->
   <div id="vt-lightbox">
     <button id="vt-lightbox-close" aria-label="Close">&times;</button>
@@ -583,6 +587,8 @@
       // Re-evaluate the composer lock on every DOM change (new bot message,
       // widget shown/removed, composer re-render).
       if (typeof refreshComposerLock === 'function') refreshComposerLock();
+      // Match Markdown-table text to the normal message text size.
+      if (typeof alignTableText === 'function') alignTableText();
     }
 
     // ── Landscape orientation when a video is enlarged (fullscreen) ──
@@ -736,6 +742,9 @@
         _seekClear = setTimeout(function(){ _seekSuppress = false; }, 450);
       });
 
+      // Read-aloud arbitration: stop speaking when this clip plays (see ttsRegisterMedia).
+      ttsRegisterMedia(v);
+
       v.addEventListener('play',  function(){ if (_seekSuppress || v.seeking) return; logRow('Click Play Video (HK)', hkNow()); });
       v.addEventListener('pause', function(){ if (v.ended || _seekSuppress || v.seeking) return; logRow('Click Pause Video (HK)', hkNow()); });
       v.addEventListener('ended', function(){ logRow('Video Watch End Time (HK)', hkNow()); });
@@ -747,6 +756,8 @@
       setStatus('ready', 'Audio detected — listeners attached');
       // Hide the browser's native playback-speed button from the audio controls.
       try { a.setAttribute('controlsList', 'noplaybackrate'); } catch (e) {}
+      // Read-aloud arbitration: stop speaking when this clip plays (see ttsRegisterMedia).
+      ttsRegisterMedia(a);
       a.addEventListener('play',  function(){ logAudioRow('Click Play Audio (HK)', hkNow()); });
       a.addEventListener('pause', function(){ if (!a.ended) logAudioRow('Click Pause Audio (HK)', hkNow()); });
       a.addEventListener('ended', function(){ logAudioRow('Audio Listen End Time (HK)', hkNow()); });
@@ -932,7 +943,18 @@
       }
       return null;
     }
+    // Set when a pin-to-bottom was suppressed because read-aloud owns the
+    // scroll; triggers one catch-up scroll after the reading finishes.
+    var _scrollHeld = false;
+
     function scrollChatToBottom() {
+      // While a message is being read aloud, KEEP THAT MESSAGE ON SCREEN. New
+      // bot messages arriving underneath must not yank the view to the bottom,
+      // or the listener loses the text being spoken.
+      if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) {
+        _scrollHeld = true;
+        return;
+      }
       var sr = bpShadowRoot();
       var sc = bpScrollEl(sr) ||
                (sr && (sr.querySelector('.bpMessageListContainer') ||
@@ -972,6 +994,23 @@
         // Footer: drop the Botpress link, show plain copyright text instead.
         '.bpComposerFooter a{display:none!important;}' +
         '.bpComposerFooter::after{content:"Kinny © 2026\\00A0\\00A0\\00A0Power by Botpress";}' +
+        // Markdown tables (the 8-week course overview) render at a smaller size
+        // than the surrounding message text. Force the whole table to inherit
+        // the bubble's font-size so it matches the rest of the conversation —
+        // important for elderly readers. Padding is bumped a little so the rows
+        // don't look cramped once the text is bigger.
+        '.bpMessageBlocksBubble table,.bpMessageContainer table{' +
+          'font-size:inherit!important;line-height:inherit!important;width:100%!important;' +
+          'border-collapse:collapse!important;}' +
+        '.bpMessageBlocksBubble table th,.bpMessageBlocksBubble table td,' +
+        '.bpMessageContainer table th,.bpMessageContainer table td{' +
+          'font-size:inherit!important;line-height:1.5!important;padding:9px 10px!important;' +
+          'vertical-align:middle!important;}' +
+        // Markdown can also wrap cell text in <p>/<span>, which carry their own
+        // size — pull those back to inherit too, or the override above is undone.
+        '.bpMessageBlocksBubble table p,.bpMessageBlocksBubble table span,' +
+        '.bpMessageContainer table p,.bpMessageContainer table span{' +
+          'font-size:inherit!important;line-height:inherit!important;margin:0!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -980,6 +1019,44 @@
           '.bpMessageBlocksBubble{max-width:95%!important;}' +
         '}';
       sr.appendChild(st);
+    }
+
+    // ── Markdown tables: match the normal message text size ──
+    // The 8-week overview renders as a Markdown table whose text comes out
+    // noticeably smaller than the surrounding messages. The CSS above sets the
+    // table to font-size:inherit, which fixes it when the small size is set on
+    // the table itself — but if Botpress puts it on a WRAPPER around the table,
+    // inheriting just picks the small size back up. So we also measure a real
+    // text bubble and stamp that exact px size on each table.
+    var _tblRefSize = 0;
+    function alignTableText() {
+      var sr = bpShadowRoot();
+      if (!sr) return;
+      var tables = sr.querySelectorAll('table');
+      if (!tables.length) return;
+
+      // Reference = the largest font-size among bubbles that contain no table,
+      // i.e. ordinary conversation text.
+      if (!_tblRefSize) {
+        var bubbles = sr.querySelectorAll('.bpMessageBlocksBubble');
+        for (var i = 0; i < bubbles.length; i++) {
+          if (bubbles[i].querySelector('table')) continue;
+          var fs = parseFloat(getComputedStyle(bubbles[i]).fontSize) || 0;
+          if (fs > _tblRefSize) _tblRefSize = fs;
+        }
+      }
+      if (!_tblRefSize) return;   // no plain bubble on screen yet — try again next scan
+
+      for (var t = 0; t < tables.length; t++) {
+        var tb = tables[t];
+        if (tb._vtSized === _tblRefSize) continue;   // already done at this size
+        tb._vtSized = _tblRefSize;
+        tb.style.setProperty('font-size', _tblRefSize + 'px', 'important');
+        var kids = tb.querySelectorAll('th,td,p,span,strong,em');
+        for (var c = 0; c < kids.length; c++) {
+          kids[c].style.setProperty('font-size', 'inherit', 'important');
+        }
+      }
     }
 
     // ── Composer lock (disable free-text typing) ─────────────
@@ -1356,6 +1433,8 @@
       var sc = bpScrollEl(sr);
       if (sc) {
         var mo = new MutationObserver(function () {
+          // Read-aloud owns the scroll while it's speaking — don't pin.
+          if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) { _scrollHeld = true; return; }
           var nearBottom = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 250;
           if (nearBottom) sc.scrollTop = sc.scrollHeight;
         });
@@ -1766,6 +1845,916 @@
       refreshComposerLock();   // widget on screen → typing locked
     }
 
+    // =========================================================
+    // READ-ALOUD (TTS) — Web Speech API, Cantonese
+    // =========================================================
+    // Zero-cost, fully client-side. No API key, no network call, no
+    // Botpress change. Speaks each NEW bot message when the user has
+    // switched the toggle on.
+    //
+    // Device reality (why the button can hide itself):
+    //   • iOS / iPadOS / macOS Safari → built-in zh-HK voice (Sinji). Works.
+    //   • Edge on Windows            → zh-HK natural voices. Best quality.
+    //   • Android Chrome             → Cantonese is a SEPARATE Google TTS
+    //     voice pack that is usually NOT installed. Without it the device
+    //     falls back to Mandarin, which reads Cantonese text in Putonghua.
+    //     Install it via Settings → Accessibility → Text-to-speech output →
+    //     Google TTS → Install voice data → Cantonese (Hong Kong).
+    // If NO Chinese voice exists at all we stay silent rather than speak
+    // nonsense. `__vtTTS.voices()` in the console lists what the device offers.
+    // ---------------------------------------------------------
+    // CONTROL: there is no custom button. Botpress's own speaker (mute/unmute)
+    // icon in the header is the single switch — unmuted means read-aloud is on.
+    // One control keeps it simple for elderly users, and leaves the
+    // new-conversation button unobstructed.
+    var TTS_RATE         = 0.85;          // slower than default — elderly listeners
+    var TTS_PITCH        = 1.0;
+    var TTS_LANG         = 'zh-HK';
+    var TTS_CHUNK_MAX    = 140;           // Chrome truncates long utterances; split first
+    var TTS_ARM_DELAY_MS = 1500;          // ignore replayed history for this long after ready
+
+    var _synth        = (typeof window !== 'undefined') && window.speechSynthesis;
+    var _ttsSupported = !!(_synth && typeof window.SpeechSynthesisUtterance === 'function');
+    var _ttsOn        = false;
+    var _ttsArmed     = false;   // false until the initial history replay is past
+    var _ttsPrimed    = false;   // iOS needs one utterance inside a real user gesture
+    var _ttsVoice     = null;
+    var _ttsVoiceIsCanto = false;
+    var _ttsMsgQueue  = [];      // whole messages waiting their turn (FIFO)
+    var _ttsQueue     = [];      // chunks of the message being spoken right now
+    var _ttsBusy      = false;   // a message is mid-read
+    var _ttsCurrent   = '';      // full text of the message being read (for re-queue)
+    var _ttsSeen      = {};      // message id → true (dedupe; Botpress can re-emit)
+    var _ttsOutCount  = -1;      // number of outgoing (user) rows last seen in the DOM
+    var _ttsKeepAlive = null;
+
+    // ── Voice selection ──────────────────────────────────────
+    // Ranked: true Cantonese → any Chinese-HK/Taiwan → any Chinese at all.
+    // Anything below真 Cantonese is flagged so the console says so.
+    function ttsPickVoice() {
+      var vs = [];
+      try { vs = _synth.getVoices() || []; } catch (e) { return null; }
+      if (!vs.length) return null;
+      function lang(v) { return String(v.lang || '').toLowerCase().replace(/_/g, '-'); }
+      function name(v) { return String(v.name || ''); }
+      function find(fn) { for (var i = 0; i < vs.length; i++) { if (fn(vs[i])) return vs[i]; } return null; }
+
+      var v =
+        find(function (x) { var l = lang(x); return l === 'zh-hk' || l.indexOf('yue') === 0; }) ||
+        find(function (x) { return /cantonese|粵|粤|廣東|广东/i.test(name(x)); }) ||
+        find(function (x) { var l = lang(x); return l.indexOf('zh-hk') !== -1 || l.indexOf('yue') !== -1; });
+      if (v) { _ttsVoiceIsCanto = true; return v; }
+
+      _ttsVoiceIsCanto = false;
+      return find(function (x) { return lang(x).indexOf('zh-tw') === 0; }) ||
+             find(function (x) { return lang(x).indexOf('zh') === 0; }) ||
+             null;
+    }
+
+    function ttsResolveVoice() {
+      var v = ttsPickVoice();
+      if (!v) return false;
+      _ttsVoice = v;
+      console.log('[VideoTrack][TTS] Voice:', v.name, '(' + v.lang + ')',
+                  _ttsVoiceIsCanto ? '— Cantonese ✓'
+                                   : '— ⚠ NOT Cantonese; this device will read the text in Mandarin');
+      return true;
+    }
+
+    // ── Strip markers / markdown / URLs before speaking ───────
+    // Without this the bot reads "__userid:003__" aloud as "userid colon
+    // zero zero three", and every painscale/sessionmenu marker too.
+    var TTS_MARKER_PREFIXES = ['userid', 'session', 'placement', 'reviewsession',
+                               'currentvideoclipno', 'painscale', 'confscale', 'sessionmenu'];
+
+    // Built via RegExp() rather than a /…/u literal: an unsupported flag in a
+    // literal is a PARSE error that would kill this whole script on old browsers.
+    var _TTS_EMOJI_RE = null;
+    try {
+      _TTS_EMOJI_RE = new RegExp('[\\u{1F000}-\\u{1FAFF}\\u{2190}-\\u{21FF}\\u{2300}-\\u{27BF}\\u{FE0F}\\u{2B00}-\\u{2BFF}]', 'gu');
+    } catch (e) { _TTS_EMOJI_RE = /[←-⇿⌀-➿️]/g; }
+
+    function ttsIsMarkerText(raw) {
+      var s = String(raw || '').trim();
+      if (!s) return true;
+      if (/^__[^_]+?:[\s\S]*?__$/.test(s)) return true;          // raw marker
+      var lower = s.toLowerCase();
+      for (var i = 0; i < TTS_MARKER_PREFIXES.length; i++) {      // Markdown-rendered marker
+        if (lower.indexOf(TTS_MARKER_PREFIXES[i] + ':') === 0) return true;
+      }
+      return /^[^:\s]+:(singlechoice|multiplechoice)(:|$)/i.test(s);
+    }
+
+    function ttsSanitize(raw) {
+      var t = String(raw || '');
+      if (ttsIsMarkerText(t)) return '';
+      t = t.replace(/__[^_]+?:[\s\S]*?__/g, ' ');       // markers embedded mid-text
+      t = t.replace(/!\[[^\]]*\]\([^)]*\)/g, ' ');      // markdown images
+      t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');    // links → keep the label only
+      t = t.replace(/https?:\/\/\S+/gi, ' ');           // bare URLs
+      t = t.replace(/`+[^`]*`+/g, ' ');                 // code spans
+      t = t.replace(/[*_#>~`|]/g, ' ');                 // leftover markdown punctuation
+      try { t = t.replace(_TTS_EMOJI_RE, ' '); } catch (e) {}
+      return t.replace(/\s+/g, ' ').trim();
+    }
+
+    // ── Chunking ─────────────────────────────────────────────
+    // Chrome silently drops the tail of long utterances, so break on sentence
+    // punctuation. Hand-rolled loop — no lookbehind regex (Safari < 16.4).
+    function ttsChunk(t) {
+      var out = [], buf = '', ENDERS = '。！？!?；;\n';
+      for (var i = 0; i < t.length; i++) {
+        buf += t.charAt(i);
+        if ((ENDERS.indexOf(t.charAt(i)) !== -1 && buf.length >= 12) || buf.length >= TTS_CHUNK_MAX) {
+          out.push(buf.trim());
+          buf = '';
+        }
+      }
+      if (buf.trim()) out.push(buf.trim());
+      return out.filter(function (s) { return s.length > 0; });
+    }
+
+    // ── Media arbitration ────────────────────────────────────
+    // CRITICAL: when a clip starts we STOP TALKING. We never call pause() on
+    // the media element to make room for speech — a programmatic pause fires a
+    // real 'pause' event, which attachToVideo/attachToAudio would log as a
+    // "Click Pause" row in UserInputTable and corrupt the watch-duration data.
+    var _ttsMediaEls = [];
+
+    function ttsRegisterMedia(el) {
+      if (!el || _ttsMediaEls.indexOf(el) !== -1) return;
+      _ttsMediaEls.push(el);
+      // A clip starting is a hard stop: whatever was being read is ABANDONED,
+      // not re-queued, and the pending queue is dropped too. Nothing replays
+      // when the clip finishes — the user moved on.
+      el.addEventListener('play', function () {
+        if (_ttsBusy || _ttsMsgQueue.length) {
+          console.log('[VideoTrack][TTS] clip started — read-aloud stopped (not resumed later)');
+        }
+        ttsStop();
+      });
+    }
+
+    function ttsMediaPlaying() {
+      for (var i = 0; i < _ttsMediaEls.length; i++) {
+        var m = _ttsMediaEls[i];
+        if (m && !m.paused && !m.ended) return true;
+      }
+      return false;
+    }
+
+    // ── Jump to the message being read ───────────────────────
+    // When a message starts being read we JUMP straight to it — no gliding —
+    // and park it just below the top of the view, leaving a gap above so the
+    // previous message's edge still shows and it doesn't look jammed against
+    // the top. That gap is measured from the conversation itself (the real
+    // spacing between two message rows), so it matches the existing rhythm
+    // instead of being an invented number.
+    //
+    // A message taller than the screen gets further jumps as the reading
+    // advances, so the text being spoken stays on screen. Short messages —
+    // the common case — get exactly one jump and then hold still.
+    var TTS_SCROLL_ON = true;
+    var TTS_GAP_FALLBACK = 16; // px, used only if the conversation gap can't be measured
+
+    var _scRow  = null,   // message element being read
+        _scTotal = 0,     // its length in characters
+        _scDone  = 0,     // characters spoken so far
+        _scLoop  = null,  // rAF id of the position keeper
+        _scWant  = -1,    // the scrollTop we intend to hold (-1 = not set yet)
+        _scAbort = false, // user took over scrolling — stay out of their way
+        _scUserAt = 0,    // timestamp of the last genuine scroll input from the person
+        _scLoggedAt = 0;  // throttle for the "held position" log line
+
+    // How long after a scroll gesture a position change still counts as theirs.
+    // Generous, because iOS momentum keeps scrolling after the finger lifts.
+    var TTS_USER_SCROLL_MS = 2000;
+
+    // Marks input that can actually SCROLL. A plain tap (pointerdown/touchstart)
+    // deliberately does not count: the user taps 「OK」, the bot answers, Botpress
+    // scrolls — and mistaking that for a manual scroll would drop the hold at
+    // exactly the wrong moment. Only dragging, wheeling and scroll keys count.
+    // These events are composed, so they cross the webchat's shadow boundary.
+    var _scInputWired = false;
+    function ttsWireUserScrollDetect() {
+      if (_scInputWired) return;
+      _scInputWired = true;
+      var moved = false;
+      var opts  = { capture: true, passive: true };
+      function mark() { _scUserAt = Date.now(); }
+      document.addEventListener('wheel', mark, opts);
+      document.addEventListener('touchstart', function () { moved = false; }, opts);
+      document.addEventListener('touchmove',  function () { moved = true; mark(); }, opts);
+      document.addEventListener('touchend',   function () { if (moved) mark(); }, opts);
+      document.addEventListener('keydown', function (e) {
+        if (/^(Arrow(Up|Down)|Page(Up|Down)|Home|End|Spacebar| )$/.test((e && e.key) || '')) mark();
+      }, true);
+    }
+
+    // The element that ACTUALLY scrolls the message being read. Resolved by
+    // walking up from the row itself (crossing the shadow boundary) to the
+    // nearest genuinely scrollable ancestor — guessing at a container instead
+    // means setting scrollTop on something that doesn't scroll, which silently
+    // does nothing and leaves the view wherever Botpress last put it (the end).
+    var _scEl = null;
+
+    function ttsScrollElFor(row) {
+      var n = row ? row.parentNode : null;
+      while (n) {
+        if (n.nodeType === 11) { n = n.host || null; continue; }   // shadow root → its host
+        if (n.nodeType !== 1) break;
+        var cs = null;
+        try { cs = getComputedStyle(n); } catch (e) {}
+        if (cs && /(auto|scroll)/.test(cs.overflowY) && n.scrollHeight > n.clientHeight + 8) return n;
+        n = n.parentNode;
+      }
+      return null;
+    }
+
+    function ttsScrollEl() {
+      if (_scEl && _scEl.isConnected !== false) return _scEl;
+      var sr = bpShadowRoot();
+      return (sr && bpScrollEl(sr)) || (typeof painScaleContainer === 'function' ? painScaleContainer() : null);
+    }
+
+    // True while read-aloud owns the scroll position. The webchat's own
+    // pin-to-bottom (scrollChatToBottom + the message-list MutationObserver)
+    // checks this and stands down, so a bot message arriving mid-sentence can't
+    // drag the view off the message being spoken.
+    // Deliberately keyed on _ttsBusy rather than _scRow: _scRow is momentarily
+    // null between two queued messages, and a pin-to-bottom slipping through
+    // that gap would still snatch the view away mid-read.
+    // Keyed on the SESSION, not on _ttsBusy. The bot sends its messages a couple
+    // of seconds apart, so a short one finishes reading before the next arrives
+    // and the queue is briefly empty. Releasing in that gap let the webchat pin
+    // to the bottom, which is what made the view leap to the end of the burst.
+    // The hold now spans the whole burst, gaps included.
+    function ttsHoldsScroll() {
+      return !!(_ttsOn && TTS_SCROLL_ON && _ttsSession && !_scAbort);
+    }
+
+    // A read-aloud burst is running. Stays true across the pauses between the
+    // bot's messages, and only ends when there's nothing left to read AND the
+    // bot has stopped sending.
+    var _ttsSession = false;
+
+    // Reading finished (or was stopped) — if we suppressed any pin-to-bottom
+    // while it ran, do one now so the newest messages come into view.
+    function ttsReleaseScroll() {
+      _ttsSession = false;
+      if (typeof _scrollHeld === 'undefined' || !_scrollHeld) return;
+      _scrollHeld = false;
+      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon();
+    }
+
+    // Polled: end the burst only once nothing is being read, nothing is queued,
+    // AND the bot has gone quiet. Then — and only then — reveal the tail of the
+    // conversation (the video card, a choice widget, whatever came last).
+    function ttsMaybeEndSession() {
+      if (!_ttsSession) return;
+      if (_ttsBusy || _ttsMsgQueue.length) return;                       // still reading
+      if (typeof botIsIdle === 'function' && !botIsIdle()) return;       // bot still talking
+      _ttsSession = false;
+      _scrollHeld = false;
+      ttsScrollEnd();
+      console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
+      // Unconditional: the tail of the burst (a video card, a choice widget)
+      // often isn't a spoken message, so there may have been no suppressed pin
+      // to replay — but it still needs to be brought into view.
+      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon();
+    }
+
+    function ttsScrollBegin(row, totalChars) {
+      ttsScrollEnd();
+      if (!TTS_SCROLL_ON) return;
+      _scRow = row || null;
+      _scTotal = Math.max(1, totalChars || 0);
+      _scDone = 0;
+      _scAbort = false;
+      _scWant = -1;
+      _scEl = ttsScrollElFor(_scRow);   // resolve from the row, not by guessing
+      ttsScrollJump(0);                 // land on the message before the voice starts
+      ttsScrollLoopStart();
+    }
+
+    function ttsScrollEnd() {
+      if (_scLoop) { cancelAnimationFrame(_scLoop); _scLoop = null; }
+      _scRow = null; _scEl = null; _scDone = 0; _scWant = -1;
+    }
+
+    // ── The position keeper ──────────────────────────────────
+    // Declining our OWN pin-to-bottom isn't enough: the Botpress webchat
+    // scrolls its message list to the bottom by itself whenever a message
+    // arrives, from inside its own bundle where we can't intercept it. So while
+    // reading we hold a desired scrollTop (_scWant) and, every frame, put the
+    // container back if something moved it.
+    //
+    // Telling the two apart: Botpress always jumps DOWN to the very bottom, so
+    // a downward move that lands at the bottom is treated as its auto-scroll
+    // and undone. Anything else is the user, and the user always wins.
+    function ttsScrollLoopStart() {
+      if (_scLoop) return;
+      function frame(ts) {
+        _scLoop = requestAnimationFrame(frame);
+        if (!ttsHoldsScroll()) return;
+        var sc = ttsScrollEl();
+        if (!sc) return;
+        var now = Date.now();
+        if (_scWant < 0) _scWant = sc.scrollTop;
+
+        var drift = sc.scrollTop - _scWant;
+        if (Math.abs(drift) > 12) {
+          // Was this the person, or Botpress? Decided ONLY by whether a scroll
+          // gesture happened just before. Direction is not a usable signal:
+          // Botpress re-rendering the message list can reset scrollTop upwards,
+          // which would otherwise be misread as a manual scroll.
+          if ((Date.now() - _scUserAt) < TTS_USER_SCROLL_MS) {
+            _scAbort = true;                      // hands off for the rest of this message
+            _ttsSession = false;                  // and for the rest of this burst
+            ttsScrollEnd();
+            // NOTE: no scroll-to-bottom here. The user picked this position;
+            // yanking them to the end would undo the very thing they just did.
+            _scrollHeld = false;
+            console.log('[VideoTrack][TTS] manual scroll — reader released for this message');
+            return;
+          }
+          sc.scrollTop = _scWant;                 // programmatic jump — put it back
+          _scWant = sc.scrollTop;
+          if (now - _scLoggedAt > 1000) {         // throttled so a fight is visible but not spammy
+            _scLoggedAt = now;
+            console.log('[VideoTrack][TTS] held position against an auto-scroll of ' +
+                        Math.round(drift) + 'px');
+          }
+        }
+
+      }
+      _scLoop = requestAnimationFrame(frame);
+    }
+
+    // The conversation's own spacing between two message rows. Measured once
+    // from the live DOM so the gap we leave matches what's already on screen.
+    var _scGap = 0;
+    function ttsConvGap(sc) {
+      if (_scGap) return _scGap;
+      try {
+        var rows = sc.querySelectorAll('.bpMessageContainer');
+        for (var i = 1; i < rows.length; i++) {
+          var a = rows[i - 1].getBoundingClientRect();
+          var b = rows[i].getBoundingClientRect();
+          var g = b.top - a.bottom;
+          if (g > 0 && g < 120) { _scGap = Math.round(g); return _scGap; }
+        }
+      } catch (e) {}
+      return TTS_GAP_FALLBACK;   // don't cache the fallback — retry next message
+    }
+
+    // Where should scrollTop be when `frac` of the message has been read?
+    // frac 0 → message top parked one conversation-gap below the view's top.
+    // frac 1 → message bottom one gap above the view's base (tall messages only).
+    function ttsScrollTarget(frac, sc) {
+      if (!_scRow || !_scRow.getBoundingClientRect) return null;
+      var rr = _scRow.getBoundingClientRect(), sr = sc.getBoundingClientRect();
+      if (!rr.height) return null;
+      var gap      = ttsConvGap(sc);
+      var rowTop   = rr.top - sr.top + sc.scrollTop;
+      var startTop = rowTop - gap;                                  // spacing above the message
+      var endTop   = rowTop + rr.height - sc.clientHeight + gap;    // spacing below it
+      // Fits on screen → one position, top-anchored with its gap. No creeping.
+      var target   = (endTop <= startTop) ? startTop
+                                          : startTop + (endTop - startTop) * frac;
+      var max = Math.max(0, sc.scrollHeight - sc.clientHeight);
+      return Math.max(0, Math.min(max, target));
+    }
+
+    // Jump (instantly) to where `frac` of the way through the message belongs.
+    function ttsScrollJump(frac) {
+      if (!TTS_SCROLL_ON || !_scRow || _scAbort) return;
+      var sc = ttsScrollEl();
+      if (!sc || !sc.getBoundingClientRect) return;
+      var target = ttsScrollTarget(frac, sc);
+      if (target === null) return;
+      if (_scWant >= 0 && Math.abs(target - _scWant) < 2) return;   // already there
+      sc.scrollTop = target;
+      _scWant = sc.scrollTop;        // absorb any clamping the browser applies
+
+      // Verify we actually landed ON the message. If the arithmetic was off —
+      // wrong scroll container, an offset parent we didn't account for — the
+      // row won't be near the top of the view and we'd be stuck at the end.
+      // scrollIntoView knows the true geometry, so fall back to it and then
+      // back off by the conversation gap for the spacing.
+      if (frac === 0) {
+        var rr = _scRow.getBoundingClientRect(), sr = sc.getBoundingClientRect();
+        var off = rr.top - sr.top;
+        if (off < -24 || off > sc.clientHeight * 0.6) {
+          console.log('[VideoTrack][TTS] jump missed (row ' + Math.round(off) +
+                      'px from top) — using scrollIntoView');
+          try { _scRow.scrollIntoView({ block: 'start', inline: 'nearest' }); } catch (e) {}
+          sc.scrollTop = Math.max(0, sc.scrollTop - ttsConvGap(sc));
+          _scWant = sc.scrollTop;
+        }
+      }
+      ttsScrollLoopStart();          // hold this position from here on
+    }
+
+    // Called as each chunk starts speaking. For a message that fits on screen
+    // the target never changes, so this is a no-op after the first jump.
+    function ttsScrollAdvance(chars) {
+      if (!TTS_SCROLL_ON || !_scRow || _scAbort) return;
+      _scDone += (chars || 0);
+      ttsScrollJump(Math.min(1, _scDone / _scTotal));
+    }
+
+    // ── Speaking ─────────────────────────────────────────────
+    // Messages are QUEUED, not superseded. If the bot sends three messages in a
+    // row, each is read to the end before the next begins — the reader never
+    // jumps ahead. ttsStop() is the only thing that cuts a message short, and
+    // it discards rather than rewinds.
+    // A queue entry is { text, row } — row is the message element, used to keep
+    // the scroll position in step with the reading (ttsScrollAdvance).
+    function ttsSpeak(text, row) {
+      if (!_ttsSupported || !_ttsOn || !text) return;
+      _ttsSession = true;                   // burst starts (or continues)
+      _ttsMsgQueue.push({ text: text, row: row || null });
+      if (!_ttsBusy) ttsNextMessage();
+    }
+
+    function ttsNextMessage() {
+      if (!_ttsMsgQueue.length) {
+        // Queue drained — but the bot may just be pausing before its next
+        // message. Keep holding the current position; ttsMaybeEndSession()
+        // decides when the burst is genuinely over.
+        _ttsBusy = false;
+        ttsKeepAliveStop();
+        return;
+      }
+      _ttsBusy    = true;
+      var item    = _ttsMsgQueue.shift();
+      _ttsCurrent = item.text;
+      _ttsQueue   = ttsChunk(item.text);
+      ttsScrollBegin(item.row, item.text.length);
+      ttsKeepAliveStart();
+      // Chrome/Edge drop an utterance passed to speak() in the same tick as a
+      // cancel(), and can be left in a stuck paused state. Small gap + nudge.
+      setTimeout(function () {
+        try { if (_synth.paused) _synth.resume(); } catch (e) {}
+        ttsPump();
+      }, 90);
+    }
+
+    function ttsPump() {
+      if (!_ttsQueue.length) { ttsNextMessage(); return; }   // message done → next one
+      var chunk = _ttsQueue.shift();
+      // Creep the conversation along at roughly the pace this chunk is read.
+      ttsScrollAdvance(chunk.length);
+      var u;
+      try { u = new SpeechSynthesisUtterance(chunk); } catch (e) { return; }
+      if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
+      else           { u.lang = TTS_LANG; }
+      u.rate   = TTS_RATE;
+      u.pitch  = TTS_PITCH;
+      u.volume = 1;
+      u.onend   = function () { setTimeout(ttsPump, 0); };
+      u.onerror = function (e) {
+        // 'interrupted'/'canceled' are normal — they fire on our own cancel().
+        var err = (e && e.error) || 'unknown';
+        if (err !== 'interrupted' && err !== 'canceled') {
+          console.warn('[VideoTrack][TTS] utterance error:', err);
+        }
+        setTimeout(ttsPump, 0);
+      };
+      try { _synth.speak(u); } catch (e) { console.warn('[VideoTrack][TTS] speak failed:', e && e.message); }
+    }
+
+    // Stopping always DISCARDS. Whether it was a user message or a clip that
+    // interrupted, the partly-read message is gone and nothing is replayed —
+    // the user has moved on and re-hearing it would be noise.
+    function ttsStop() {
+      _ttsCurrent  = '';
+      _ttsQueue    = [];
+      _ttsMsgQueue = [];
+      _ttsBusy     = false;
+      try { _synth && _synth.cancel(); } catch (e) {}
+      ttsKeepAliveStop();
+      ttsScrollEnd();
+      // Stopped by a user send or a clip — the user's attention has moved, so
+      // let the view jump to the bottom as it normally would.
+      ttsReleaseScroll();
+    }
+
+    // Desktop Chrome stops synthesis after ~15s. The standard workaround is a
+    // pause/resume nudge. Skipped on iOS, where it causes audible stutter.
+    function ttsKeepAliveStart() {
+      if (_ttsKeepAlive || IS_IOS) return;
+      _ttsKeepAlive = setInterval(function () {
+        if (!_synth) return;
+        if (_synth.speaking && !_synth.paused) { try { _synth.pause(); _synth.resume(); } catch (e) {} }
+      }, 9000);
+    }
+    function ttsKeepAliveStop() {
+      if (_ttsKeepAlive) { clearInterval(_ttsKeepAlive); _ttsKeepAlive = null; }
+    }
+
+    // iOS/Safari refuse speak() unless one utterance has already run inside a
+    // real user gesture. The toggle tap is that gesture.
+    function ttsPrime() {
+      if (_ttsPrimed || !_ttsSupported) return;
+      _ttsPrimed = true;
+      try {
+        var u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0;
+        _synth.speak(u);
+      } catch (e) {}
+    }
+
+    // ── Driven by Botpress's own speaker (mute/unmute) button ──
+    // No custom control: the header's speaker icon is the single switch, so the
+    // user has one idea of "sound" and the new-conversation button stays clear.
+    // Botpress persists that setting in localStorage under
+    // bp-webchat-<client-id>-sound, which we poll as the source of truth.
+    // If it isn't being picked up, run __vtTTS.findSound() in the console.
+    function bpSoundKey() {
+      try {
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (k && /^bp-webchat-.*-sound$/i.test(k)) return k;
+        }
+      } catch (e) {}
+      return null;
+    }
+
+    function bpSoundIsOn() {
+      var k = bpSoundKey();
+      if (!k) return null;
+      var raw;
+      try { raw = localStorage.getItem(k); } catch (e) { return null; }
+      if (raw == null) return null;
+      raw = String(raw).trim();
+      if (/^"?(true|false)"?$/i.test(raw)) return /true/i.test(raw);
+      try {
+        var o = JSON.parse(raw), found = null;
+        (function walk(v, depth) {
+          if (found !== null || v == null || depth > 4) return;
+          if (typeof v === 'object') {
+            for (var kk in v) {
+              if (typeof v[kk] === 'boolean' && /sound|enable|mute|on/i.test(kk)) {
+                found = /mute/i.test(kk) ? !v[kk] : v[kk];
+                return;
+              }
+            }
+            for (var k2 in v) walk(v[k2], depth + 1);
+          }
+        })(o, 0);
+        return found;
+      } catch (e) { return null; }
+    }
+
+    function bpSoundBtn() {
+      var sr = bpShadowRoot();
+      if (!sr) return null;
+      var cands = sr.querySelectorAll('button, [role="button"], [class*="ound"], [class*="olume"]');
+      for (var i = 0; i < cands.length; i++) {
+        var el = cands[i];
+        var hay = [el.className && el.className.baseVal !== undefined ? el.className.baseVal : el.className,
+                   el.getAttribute('aria-label') || '', el.getAttribute('title') || '',
+                   el.getAttribute('data-testid') || ''].join(' ');
+        if (/sound|volume|mute|audio|聲|音/i.test(hay)) return el;
+      }
+      return null;
+    }
+
+    // ── Start each session muted ─────────────────────────────
+    // Botpress's speaker defaults to unmuted, which would make read-aloud start
+    // talking on its own. We mute it once per session so the participant opts in.
+    //
+    // The "already done" flag is deliberately stored under a bp-webchat- prefix:
+    // the 7-day reset block at the top of this file wipes every bp-webchat-* key,
+    // so this flag dies with the conversation and the NEXT session starts muted
+    // again — while an unmute during a session still sticks across reloads.
+    var TTS_MUTE_FLAG   = 'bp-webchat-vt-initial-mute';
+    var _ttsMuteSettled = false;   // true once the mute is applied (or given up on)
+
+    function ttsApplyInitialMute() {
+      // Already handled earlier this session (e.g. a reload) — respect whatever
+      // the user has since chosen.
+      try {
+        if (localStorage.getItem(TTS_MUTE_FLAG) === '1') { _ttsMuteSettled = true; return true; }
+      } catch (e) {}
+      var cur = bpSoundIsOn();
+      if (cur === null) return false;                 // can't read state yet — retry
+      if (cur === false) {                            // already muted, nothing to click
+        try { localStorage.setItem(TTS_MUTE_FLAG, '1'); } catch (e) {}
+        _ttsMuteSettled = true;
+        return true;
+      }
+      var btn = bpSoundBtn();
+      if (!btn) return false;                         // button not rendered yet — retry
+      try { btn.click(); } catch (e) { return false; }
+      try { localStorage.setItem(TTS_MUTE_FLAG, '1'); } catch (e) {}
+      _ttsOn = false;
+      _ttsMuteSettled = true;
+      console.log('[VideoTrack][TTS] muted for the start of this session — ' +
+                  'tap the speaker in the header to hear the messages read aloud');
+      return true;
+    }
+
+    // Botpress's speaker button is the MASTER switch — we only follow it.
+    // Unmuted (sound on) → read-aloud on. Muted → silent, queue dropped.
+    function ttsWatchSound() {
+      // Until the start-of-session mute has landed, ignore Botpress's default
+      // "unmuted" — otherwise a fast first message could be read aloud in the
+      // gap before we get the chance to mute.
+      if (!_ttsMuteSettled) return;
+      var cur = bpSoundIsOn();
+      if (cur === null || cur === _ttsOn) return;
+      _ttsOn = cur;
+      if (!_ttsOn) ttsStop();
+      console.log('[VideoTrack][TTS] follows Botpress speaker →', _ttsOn ? 'ON (unmuted)' : 'OFF (muted)');
+    }
+
+    // iOS/Safari refuse speak() until one utterance has run inside a real user
+    // gesture. With no button of our own to tap, we prime on the FIRST touch or
+    // click anywhere — including the speaker button itself, whose click lands in
+    // the shadow root. A zero-volume utterance, so nothing is audible.
+    function ttsWireGesturePriming() {
+      function once() {
+        ttsPrime();
+        document.removeEventListener('pointerdown', once, true);
+        document.removeEventListener('touchend', once, true);
+        document.removeEventListener('click', once, true);
+      }
+      document.addEventListener('pointerdown', once, true);
+      document.addEventListener('touchend', once, true);
+      document.addEventListener('click', once, true);
+    }
+
+    // ── Entry point from onMessage ───────────────────────────
+    // Logs a reason for EVERY skip. If read-aloud stays silent, the console
+    // line starting "[VideoTrack][TTS] skip —" says exactly which gate closed.
+    function ttsOnBotMessage(msg, rawText) {
+      function skip(why, extra) {
+        console.log('[VideoTrack][TTS] skip — ' + why, extra === undefined ? '' : extra);
+      }
+      if (!_ttsSupported) return skip('speechSynthesis not supported');
+
+      var id = (msg && (msg.id || msg.messageId ||
+                        (msg.block && msg.block.id))) || '';
+      if (id) {
+        if (_ttsSeen[id]) return skip('duplicate message id', id);
+        _ttsSeen[id] = true;
+      }
+      if (!_ttsArmed) return skip('not armed yet (history replay window, ' +
+                                  TTS_ARM_DELAY_MS + 'ms after ready)');
+      if (!_ttsOn)    return skip('muted — unmute with the speaker button in the header');
+
+      var clean = ttsSanitize(rawText);
+      if (!clean || clean.length < 2) {
+        return skip('nothing speakable after sanitising', JSON.stringify(String(rawText || '').slice(0, 80)));
+      }
+      console.log('[VideoTrack][TTS] speaking:', clean.slice(0, 60));
+      ttsSpeak(clean);
+    }
+
+    // ── DOM-driven message pickup (the reliable path) ────────
+    // The Botpress 'message' event does NOT fire dependably for bot messages
+    // in this bot — the same reason processMarker() has a DOM fallback for the
+    // session menu. So read-aloud watches the rendered message rows instead,
+    // using the exact selector the composer lock already relies on:
+    //   .bpMessageContainer[data-direction="incoming"]
+    //
+    // Messages stream in character by character, so a row is only spoken once
+    // its text has stopped changing for TTS_SETTLE_MS — otherwise we'd read
+    // half a sentence and then cut ourselves off with the rest.
+    var TTS_SETTLE_MS = 600;
+    var _ttsRowState  = new WeakMap();   // row element → { text, at, done }
+
+    function ttsMessageRows() {
+      var c = null;
+      try { c = (typeof painScaleContainer === 'function' && painScaleContainer()) || null; } catch (e) {}
+      if (!c) c = bpShadowRoot();
+      if (!c || !c.querySelectorAll) return [];
+      var rows = c.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+      if (rows.length) return rows;
+      // Fallback if the attribute ever changes: everything not explicitly outgoing.
+      var all = c.querySelectorAll('.bpMessageContainer'), out = [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].getAttribute('data-direction') !== 'outgoing') out.push(all[i]);
+      }
+      return out;
+    }
+
+    // Text of a bot row, minus anything that isn't the message itself:
+    // choice-button labels are options to pick, not prose to read aloud.
+    function ttsRowText(row) {
+      var clone;
+      try { clone = row.cloneNode(true); } catch (e) { return (row.textContent || '').trim(); }
+      var junk = clone.querySelectorAll(
+        '.bpMessageBlocksButton, .bpMessageBlocksDropdownButtonContainer, button, video, audio, img, svg');
+      for (var i = 0; i < junk.length; i++) {
+        if (junk[i].parentNode) junk[i].parentNode.removeChild(junk[i]);
+      }
+      return (clone.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    // Any new OUTGOING row means the user just answered — stop talking at once
+    // and drop anything queued. Done in the DOM so it catches every send path:
+    // typed text, a native choice button, the pain-scale strip and the session
+    // menu all land here, whereas the 'messageSent' event does not fire for all
+    // of them. Returns true if a send was just detected.
+    function ttsCheckUserSend() {
+      var c = null;
+      try { c = (typeof painScaleContainer === 'function' && painScaleContainer()) || null; } catch (e) {}
+      if (!c) c = bpShadowRoot();
+      if (!c || !c.querySelectorAll) return false;
+      var n = c.querySelectorAll('.bpMessageContainer[data-direction="outgoing"]').length;
+      if (_ttsOutCount === -1) { _ttsOutCount = n; return false; }   // first sighting: just record
+      if (n <= _ttsOutCount) { _ttsOutCount = n; return false; }
+      _ttsOutCount = n;
+      if (_ttsBusy || _ttsMsgQueue.length) {
+        console.log('[VideoTrack][TTS] user sent a message — stopping read-aloud');
+        ttsStop();
+      }
+      return true;
+    }
+
+    function ttsScanDom() {
+      if (!_ttsSupported) return;
+      ttsCheckUserSend();
+      var rows = ttsMessageRows();
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var st  = _ttsRowState.get(row);
+        if (st && st.done) continue;
+
+        var txt = ttsRowText(row);
+        if (!st) {                                   // first sighting — start the settle clock
+          _ttsRowState.set(row, { text: txt, at: Date.now(), done: false });
+          continue;
+        }
+        if (txt !== st.text) { st.text = txt; st.at = Date.now(); continue; }  // still streaming
+        if (Date.now() - st.at < TTS_SETTLE_MS) continue;                      // not settled yet
+
+        st.done = true;                              // decided once, never revisited
+        if (!_ttsArmed) continue;                    // history replayed on load — mark, don't read
+        if (!_ttsOn)    continue;                    // muted — mark, don't read
+
+        // Arrived while a clip is playing: mark it read and let it go. Queuing
+        // it would mean a burst of catch-up speech the moment the clip ends.
+        if (ttsMediaPlaying()) {
+          console.log('[VideoTrack][TTS] skip — a clip is playing:', txt.slice(0, 40));
+          continue;
+        }
+
+        var clean = ttsSanitize(txt);
+        if (!clean || clean.length < 2) {
+          console.log('[VideoTrack][TTS] skip — nothing speakable in row:', JSON.stringify(txt.slice(0, 60)));
+          continue;
+        }
+        console.log('[VideoTrack][TTS] ' + (_ttsBusy ? 'queued' : 'speaking') + ':', clean.slice(0, 60));
+        ttsSpeak(clean, row);   // row lets the scroll follow the reading
+      }
+    }
+
+    function ttsInit() {
+      if (!_ttsSupported) {
+        console.warn('[VideoTrack][TTS] speechSynthesis unavailable on this browser');
+        return;
+      }
+      // getVoices() is async on Chrome — it can return [] on the first call.
+      function tryResolve() { return ttsResolveVoice(); }
+      if (!tryResolve()) {
+        try { _synth.onvoiceschanged = function () { tryResolve(); }; } catch (e) {}
+        var tries = 0;
+        var iv = setInterval(function () {
+          if (tryResolve() || ++tries >= 20) {
+            clearInterval(iv);
+            if (!_ttsVoice) {
+              console.warn('[VideoTrack][TTS] No Chinese voice on this device — read-aloud stays ' +
+                           'silent. On Android install: Settings → Accessibility → ' +
+                           'Text-to-speech output → Google TTS → Install voice data → Cantonese (Hong Kong).');
+            }
+          }
+        }, 400);
+      }
+      ttsWireGesturePriming();
+      ttsWireUserScrollDetect();
+
+      // Mute for the start of the session. Retried because the header button and
+      // Botpress's stored sound state both appear a moment after 'ready'.
+      var muteTries = 0;
+      var muteIv = setInterval(function () {
+        if (ttsApplyInitialMute() || ++muteTries >= 25) {
+          clearInterval(muteIv);
+          if (!_ttsMuteSettled) {
+            // Couldn't find the button or read the state — unblock the follower
+            // so the speaker button still works, just without the initial mute.
+            _ttsMuteSettled = true;
+            console.warn('[VideoTrack][TTS] could not apply the start-of-session mute — ' +
+                         'run __vtTTS.findSound() and send me the output.');
+          }
+        }
+      }, 300);
+
+      // One timer drives everything: follow the speaker button, pick up settled
+      // bot messages, and notice user sends. The webchat lives in a shadow root
+      // that re-renders, so polling is more dependable than events here.
+      setInterval(function () { ttsScanDom(); ttsWatchSound(); ttsMaybeEndSession(); }, 250);
+      // Don't keep talking after the user navigates away.
+      window.addEventListener('pagehide', function () { ttsStop(); });
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) ttsStop();
+      });
+    }
+
+    function ttsArmSoon() {
+      if (_ttsArmed) return;
+      setTimeout(function () {
+        _ttsArmed = true;
+        console.log('[VideoTrack][TTS] armed — new bot messages will be spoken when ON');
+      }, TTS_ARM_DELAY_MS);
+    }
+
+    // Console helpers for local testing:
+    //   __vtTTS.voices()   → every voice the device exposes
+    //   __vtTTS.voice()    → the one we picked, and whether it's真 Cantonese
+    //   __vtTTS.say('你好') → speak arbitrary text
+    //   __vtTTS.clean('__userid:1__ 你好') → see what the sanitizer would speak
+    window.__vtTTS = {
+      voices: function () {
+        try { return (_synth.getVoices() || []).map(function (v) { return v.name + '  [' + v.lang + ']'; }); }
+        catch (e) { return []; }
+      },
+      voice:  function () { return { voice: _ttsVoice, cantonese: _ttsVoiceIsCanto }; },
+      // Force on/off for testing. Note the 250ms poll re-syncs to Botpress's
+      // speaker button, so these are momentary unless you also flip that.
+      on:     function () { _ttsOn = true;  _ttsArmed = true; ttsPrime(); },
+      off:    function () { _ttsOn = false; ttsStop(); },
+      say:    function (t) { _ttsOn = true; ttsPrime(); ttsSpeak(String(t || '')); },
+      clean:  ttsSanitize,
+      stop:   ttsStop,
+      // Push text through the EXACT path a real bot message takes (dedupe →
+      // armed → toggle → sanitise → media check → speak), so the skip reason
+      // printed here is the same one a live message would hit.
+      simulate: function (t) {
+        ttsOnBotMessage({ id: 'sim-' + Date.now() }, String(t || '你好，我係Kinny'));
+      },
+      // What the DOM watcher currently sees. rows = bot message rows found,
+      // pending = rows still settling, spoken = rows already decided.
+      rows: function () {
+        var rows = ttsMessageRows(), out = [];
+        for (var i = 0; i < rows.length; i++) {
+          var st = _ttsRowState.get(rows[i]);
+          out.push({ text: ttsRowText(rows[i]).slice(0, 50), decided: !!(st && st.done) });
+        }
+        return out;
+      },
+      scan: ttsScanDom,
+      // Which element is actually being scrolled, and where the row sits in it.
+      // If `scroller` is null or `rowOffsetFromTop` is huge, the jump is landing
+      // on the wrong container.
+      scrollDebug: function () {
+        var rows = ttsMessageRows();
+        var row  = rows.length ? rows[rows.length - 1] : null;
+        var sc   = row ? ttsScrollElFor(row) : null;
+        var out  = { row: row, scroller: sc, activeScroller: _scEl, gap: _scGap || null };
+        if (row && sc) {
+          var rr = row.getBoundingClientRect(), sr = sc.getBoundingClientRect();
+          out.rowOffsetFromTop = Math.round(rr.top - sr.top);
+          out.scrollTop = Math.round(sc.scrollTop);
+          out.clientHeight = sc.clientHeight;
+          out.scrollHeight = sc.scrollHeight;
+        }
+        return out;
+      },
+      // Lists every clickable in the webchat header so the sound button can be
+      // targeted exactly if the automatic match picked the wrong one.
+      findSound: function () {
+        var sr = bpShadowRoot();
+        if (!sr) return 'shadow root not found';
+        var els = sr.querySelectorAll('button, [role="button"], svg[aria-label]'), out = [];
+        for (var i = 0; i < els.length; i++) {
+          var e = els[i];
+          out.push({
+            tag: e.tagName,
+            cls: String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || ''),
+            aria: e.getAttribute('aria-label') || '',
+            title: e.getAttribute('title') || '',
+            testid: e.getAttribute('data-testid') || ''
+          });
+        }
+        return { picked: bpSoundBtn(), storageKey: bpSoundKey(), soundOn: bpSoundIsOn(), candidates: out };
+      },
+      state:  function () {
+        return { supported: _ttsSupported, on: _ttsOn, armed: _ttsArmed, primed: _ttsPrimed,
+                 speaking: !!(_synth && _synth.speaking),
+                 chunksLeft: _ttsQueue.length, messagesQueued: _ttsMsgQueue.length,
+                 busy: _ttsBusy, mediaPlaying: ttsMediaPlaying(),
+                 bpSoundOn: bpSoundIsOn(), bpSoundKey: bpSoundKey(),
+                 initialMuteSettled: _ttsMuteSettled,
+                 voice: _ttsVoice && (_ttsVoice.name + ' [' + _ttsVoice.lang + ']'),
+                 cantonese: _ttsVoiceIsCanto };
+      }
+    };
+
     // ── Boot ─────────────────────────────────────────────────
     window.addEventListener('load', function () {
       if (!window.botpress) {
@@ -1781,6 +2770,8 @@
         observeRoot(container);
         scanAll();
         enhanceMobileUX();
+        ttsInit();       // find a Cantonese voice, mute for the session, start the pollers
+        ttsArmSoon();    // ignore the history Botpress replays right after ready
         var retries = 0;
         var t = setInterval(function(){ scanAll(); enhanceMobileUX(); refreshComposerLock(); if (++retries >= 20) clearInterval(t); }, 500);
         // Keep re-evaluating the welcome/Start-button layout a bit longer, since
@@ -1840,6 +2831,10 @@
         if (!looksLikeUserMessage(msg)) {
           markConversationStarted();
           refreshComposerLock();
+          // NOTE: read-aloud is deliberately NOT triggered here. This event is
+          // unreliable for bot messages in this bot (same reason the session
+          // menu needs a DOM fallback in processMarker). ttsScanDom() watches
+          // the rendered .bpMessageContainer rows instead.
         }
 
         // Auto-scroll to the newest incoming message (mobile/iPad UX).
@@ -1849,8 +2844,10 @@
       window.botpress.on('webchat:message', onMessage);
       // Belt-and-suspenders: any user send starts the conversation and locks
       // the composer until the bot replies.
-      window.botpress.on('messageSent',         function () { markConversationStarted(); beginPostSendLock(); });
-      window.botpress.on('webchat:messageSent', function () { markConversationStarted(); beginPostSendLock(); });
+      // The user answering means they're done listening — cut the speech short
+      // so the next bot reply isn't queued behind the previous one.
+      window.botpress.on('messageSent',         function () { ttsStop(); markConversationStarted(); beginPostSendLock(); });
+      window.botpress.on('webchat:messageSent', function () { ttsStop(); markConversationStarted(); beginPostSendLock(); });
     });
 
     // ── Debug mode: show status bar when ?debug in URL ───────
