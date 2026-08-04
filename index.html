@@ -1870,7 +1870,9 @@
     var TTS_RATE         = 0.85;          // slower than default — elderly listeners
     var TTS_PITCH        = 1.0;
     var TTS_LANG         = 'zh-HK';
-    var TTS_CHUNK_MAX    = 140;           // Chrome truncates long utterances; split first
+    // Max characters per utterance. Kept small because mobile engines truncate
+    // long ones (Android was cutting out after roughly one sentence).
+    var TTS_CHUNK_MAX    = 60;
     var TTS_ARM_DELAY_MS = 1500;          // ignore replayed history for this long after ready
 
     var _synth        = (typeof window !== 'undefined') && window.speechSynthesis;
@@ -1878,6 +1880,7 @@
     var _ttsOn        = false;
     var _ttsArmed     = false;   // false until the initial history replay is past
     var _ttsPrimed    = false;   // iOS needs one utterance inside a real user gesture
+    var _ttsSpoke     = false;   // an utterance has actually STARTED — engine proven live
     var _ttsVoice     = null;
     var _ttsVoiceIsCanto = false;
     var _ttsMsgQueue  = [];      // whole messages waiting their turn (FIFO)
@@ -1887,6 +1890,13 @@
     var _ttsSeen      = {};      // message id → true (dedupe; Botpress can re-emit)
     var _ttsOutCount  = -1;      // number of outgoing (user) rows last seen in the DOM
     var _ttsKeepAlive = null;
+    var _ttsWatch     = null;    // watchdog interval for engines that skip onend
+    var _ttsIdleTicks = 0;
+    var _ttsMsgDone   = false;   // guards against onend + watchdog both firing
+
+    // Android's speech engine differs enough from desktop Chrome to need its
+    // own handling in two places (chunk size and the keep-alive nudge).
+    var IS_ANDROID = /Android/i.test(navigator.userAgent || '');
 
     // ── Voice selection ──────────────────────────────────────
     // Ranked: true Cantonese → any Chinese-HK/Taiwan → any Chinese at all.
@@ -1959,16 +1969,25 @@
     }
 
     // ── Chunking ─────────────────────────────────────────────
-    // Chrome silently drops the tail of long utterances, so break on sentence
+    // Engines silently drop the tail of long utterances, so break on sentence
     // punctuation. Hand-rolled loop — no lookbehind regex (Safari < 16.4).
+    //
+    // Chinese writes long sentences with few full stops, so a whole message can
+    // contain just one 。 at the very end and would otherwise go over as a
+    // single oversized utterance. Commas (，、,) are therefore secondary break
+    // points, and the hard cap is deliberately small — mobile engines are far
+    // less forgiving about length than desktop.
     function ttsChunk(t) {
-      var out = [], buf = '', ENDERS = '。！？!?；;\n';
+      var out = [], buf = '';
+      var HARD = '。！？!?；;\n';     // sentence enders — break as soon as we have enough
+      var SOFT = '，、,';             // clause breaks — only once the chunk is getting long
       for (var i = 0; i < t.length; i++) {
-        buf += t.charAt(i);
-        if ((ENDERS.indexOf(t.charAt(i)) !== -1 && buf.length >= 12) || buf.length >= TTS_CHUNK_MAX) {
-          out.push(buf.trim());
-          buf = '';
-        }
+        var ch = t.charAt(i);
+        buf += ch;
+        var brk = (HARD.indexOf(ch) !== -1 && buf.length >= 8) ||
+                  (SOFT.indexOf(ch) !== -1 && buf.length >= Math.floor(TTS_CHUNK_MAX * 0.6)) ||
+                  buf.length >= TTS_CHUNK_MAX;
+        if (brk) { out.push(buf.trim()); buf = ''; }
       }
       if (buf.trim()) out.push(buf.trim());
       return out.filter(function (s) { return s.length > 0; });
@@ -2285,9 +2304,11 @@
         // decides when the burst is genuinely over.
         _ttsBusy = false;
         ttsKeepAliveStop();
+        ttsWatchStop();
         return;
       }
       _ttsBusy    = true;
+      _ttsMsgDone = false;
       var item    = _ttsMsgQueue.shift();
       _ttsCurrent = item.text;
       _ttsQueue   = ttsChunk(item.text);
@@ -2301,28 +2322,83 @@
       }, 90);
     }
 
+    // Hand the WHOLE message to the engine in one go — one speak() call per
+    // chunk, queued back to back — instead of waiting for each chunk's `onend`
+    // before submitting the next.
+    //
+    // Why: on Android Chrome `onend` is unreliable. It frequently never fires,
+    // and chaining off it stops the read dead after the first chunk — which is
+    // exactly the "reads ~30 characters then goes quiet" symptom. The engine's
+    // own queue is dependable, so we let it do the sequencing and use the
+    // events only for scroll timing.
     function ttsPump() {
-      if (!_ttsQueue.length) { ttsNextMessage(); return; }   // message done → next one
-      var chunk = _ttsQueue.shift();
-      // Creep the conversation along at roughly the pace this chunk is read.
-      ttsScrollAdvance(chunk.length);
-      var u;
-      try { u = new SpeechSynthesisUtterance(chunk); } catch (e) { return; }
-      if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
-      else           { u.lang = TTS_LANG; }
-      u.rate   = TTS_RATE;
-      u.pitch  = TTS_PITCH;
-      u.volume = 1;
-      u.onend   = function () { setTimeout(ttsPump, 0); };
-      u.onerror = function (e) {
-        // 'interrupted'/'canceled' are normal — they fire on our own cancel().
-        var err = (e && e.error) || 'unknown';
-        if (err !== 'interrupted' && err !== 'canceled') {
-          console.warn('[VideoTrack][TTS] utterance error:', err);
+      if (!_ttsQueue.length) { ttsMessageDone(); return; }
+      var chunks = _ttsQueue.slice();
+      _ttsQueue = [];
+      var lastIdx = chunks.length - 1;
+      var spoke = 0;
+
+      chunks.forEach(function (chunk, i) {
+        var u;
+        try { u = new SpeechSynthesisUtterance(chunk); } catch (e) { return; }
+        if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
+        else           { u.lang = TTS_LANG; }
+        u.rate   = TTS_RATE;
+        u.pitch  = TTS_PITCH;
+        u.volume = 1;
+        // Scroll follows the voice: onstart is far more reliable than onend.
+        // It's also our proof that the engine is genuinely unlocked (iOS).
+        u.onstart = function () {
+          if (!_ttsSpoke) {
+            _ttsSpoke = true;
+            console.log('[VideoTrack][TTS] first utterance started — engine is live');
+            setStatus('success', 'TTS speaking');
+          }
+          ttsScrollAdvance(chunk.length);
+        };
+        u.onend   = function () { if (i === lastIdx) ttsMessageDone(); };
+        u.onerror = function (e) {
+          // 'interrupted'/'canceled' are normal — they fire on our own cancel().
+          var err = (e && e.error) || 'unknown';
+          if (err !== 'interrupted' && err !== 'canceled') {
+            console.warn('[VideoTrack][TTS] utterance error:', err, '| chunk:', chunk.slice(0, 24));
+            setStatus('error', 'TTS error: ' + err);
+          }
+          if (i === lastIdx) ttsMessageDone();
+        };
+        try { _synth.speak(u); spoke++; }
+        catch (e) { console.warn('[VideoTrack][TTS] speak failed:', e && e.message); }
+      });
+
+      if (!spoke) { ttsMessageDone(); return; }
+      ttsWatchStart();
+    }
+
+    // Called once per message, whichever way it ends.
+    function ttsMessageDone() {
+      if (_ttsMsgDone) return;          // onend and the watchdog can both arrive
+      _ttsMsgDone = true;
+      ttsWatchStop();
+      setTimeout(ttsNextMessage, 60);
+    }
+
+    // Safety net for engines that never deliver `onend` (Android especially).
+    // If the synthesiser reports nothing speaking and nothing pending across
+    // two consecutive checks, the message is over regardless of what fired.
+    function ttsWatchStart() {
+      ttsWatchStop();
+      _ttsIdleTicks = 0;
+      _ttsWatch = setInterval(function () {
+        if (!_synth) return;
+        if (_synth.speaking || _synth.pending) { _ttsIdleTicks = 0; return; }
+        if (++_ttsIdleTicks >= 2) {
+          console.log('[VideoTrack][TTS] engine went idle without onend — advancing');
+          ttsMessageDone();
         }
-        setTimeout(ttsPump, 0);
-      };
-      try { _synth.speak(u); } catch (e) { console.warn('[VideoTrack][TTS] speak failed:', e && e.message); }
+      }, 400);
+    }
+    function ttsWatchStop() {
+      if (_ttsWatch) { clearInterval(_ttsWatch); _ttsWatch = null; }
     }
 
     // Stopping always DISCARDS. Whether it was a user message or a clip that
@@ -2341,10 +2417,12 @@
       ttsReleaseScroll();
     }
 
-    // Desktop Chrome stops synthesis after ~15s. The standard workaround is a
-    // pause/resume nudge. Skipped on iOS, where it causes audible stutter.
+    // DESKTOP Chrome stops synthesis after ~15s; a pause/resume nudge revives it.
+    // Deliberately NOT applied on mobile: iOS stutters audibly, and on Android
+    // pause()/resume() can abort the utterance outright — the very failure this
+    // was meant to prevent. Neither mobile engine has the 15s bug anyway.
     function ttsKeepAliveStart() {
-      if (_ttsKeepAlive || IS_IOS) return;
+      if (_ttsKeepAlive || IS_IOS || IS_ANDROID) return;
       _ttsKeepAlive = setInterval(function () {
         if (!_synth) return;
         if (_synth.speaking && !_synth.paused) { try { _synth.pause(); _synth.resume(); } catch (e) {} }
@@ -2355,15 +2433,27 @@
     }
 
     // iOS/Safari refuse speak() unless one utterance has already run inside a
-    // real user gesture. The toggle tap is that gesture.
+    // real user gesture. The user's first tap is that gesture.
+    //
+    // IMPORTANT: the priming utterance must NOT have volume 0. iOS treats a
+    // muted utterance as nothing happening and stays locked — which is why
+    // read-aloud was silent on iPhone/iPad while the webchat's chime worked
+    // fine (that's an <audio> element, unlocked by different rules). A single
+    // space at normal volume is inaudible but does unlock the engine.
     function ttsPrime() {
       if (_ttsPrimed || !_ttsSupported) return;
       _ttsPrimed = true;
       try {
         var u = new SpeechSynthesisUtterance(' ');
-        u.volume = 0;
+        u.volume = 1;
+        u.rate   = 1;
+        if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
         _synth.speak(u);
-      } catch (e) {}
+        console.log('[VideoTrack][TTS] primed inside a user gesture');
+      } catch (e) {
+        _ttsPrimed = false;    // let the next gesture try again
+        console.warn('[VideoTrack][TTS] priming failed:', e && e.message);
+      }
     }
 
     // ── Driven by Botpress's own speaker (mute/unmute) button ──
@@ -2475,16 +2565,25 @@
     // gesture. With no button of our own to tap, we prime on the FIRST touch or
     // click anywhere — including the speaker button itself, whose click lands in
     // the shadow root. A zero-volume utterance, so nothing is audible.
+    // Re-primes on EVERY tap until we have actually heard an utterance start.
+    // A single attempt isn't enough on iOS: if the first tap lands before the
+    // voice list is populated, or Safari declines that particular gesture, one
+    // shot would leave read-aloud permanently locked with no way to recover.
+    // We stop re-priming as soon as an `onstart` proves the engine is live.
     function ttsWireGesturePriming() {
-      function once() {
+      function onGesture() {
+        if (_ttsSpoke) {                       // proven working — stop listening
+          document.removeEventListener('pointerdown', onGesture, true);
+          document.removeEventListener('touchend', onGesture, true);
+          document.removeEventListener('click', onGesture, true);
+          return;
+        }
+        _ttsPrimed = false;                    // allow another attempt
         ttsPrime();
-        document.removeEventListener('pointerdown', once, true);
-        document.removeEventListener('touchend', once, true);
-        document.removeEventListener('click', once, true);
       }
-      document.addEventListener('pointerdown', once, true);
-      document.addEventListener('touchend', once, true);
-      document.addEventListener('click', once, true);
+      document.addEventListener('pointerdown', onGesture, true);
+      document.addEventListener('touchend', onGesture, true);
+      document.addEventListener('click', onGesture, true);
     }
 
     // ── Entry point from onMessage ───────────────────────────
@@ -2745,6 +2844,8 @@
       },
       state:  function () {
         return { supported: _ttsSupported, on: _ttsOn, armed: _ttsArmed, primed: _ttsPrimed,
+                 everSpoke: _ttsSpoke, platform: (IS_IOS ? 'iOS' : IS_ANDROID ? 'Android' : 'desktop'),
+                 chunkMax: TTS_CHUNK_MAX, pending: !!(_synth && _synth.pending),
                  speaking: !!(_synth && _synth.speaking),
                  chunksLeft: _ttsQueue.length, messagesQueued: _ttsMsgQueue.length,
                  busy: _ttsBusy, mediaPlaying: ttsMediaPlaying(),
