@@ -3,9 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <!-- Pin the page to its own light palette. Added 2026-08-16 (emon): Chrome on
+       Android (and Samsung Internet) auto-darken light-themed sites when the OS
+       is in dark mode, which was re-colouring Kinny on some participants'
+       phones. That matters here beyond looks — the pain/confidence scales carry
+       meaning in their colour ramp (nrsColor / confBlueColor) and their text
+       contrast is computed per cell (bestTextOn), so an algorithmic re-colour
+       distorts a study instrument.
+       It MUST be "only light": plain "light" states a preference but still lets
+       the browser darken; "only light" refuses outright. -->
+  <meta name="color-scheme" content="only light" />
   <title>Kinny</title>
   <link rel="shortcut icon" type="image/png" href="Kinny icon.png">
   <style>
+    /* Matches the meta above — keeps native controls (audio bar, inputs) light too. */
+    :root { color-scheme: only light; }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: sans-serif;
@@ -750,12 +762,69 @@
       v.addEventListener('ended', function(){ logRow('Video Watch End Time (HK)', hkNow()); });
     }
 
+    // ── Audio player prominence (added 2026-08-16, emon) ─────────────────────
+    // The native <audio> bar was too small to notice on both mobile and desktop,
+    // so participants weren't realising they had to press play. We enlarge the
+    // bar AND put a short prompt above it.
+    //
+    // Styling MUST be inline: these nodes live inside Botpress's shadow root,
+    // where document <style> rules don't reach (same gotcha as the pain scale).
+    // The prompt matters because the height change alone is unreliable on iOS —
+    // Safari largely ignores height on native audio controls.
+    var AUDIO_BAR_H     = 64;                       // px — native control bar height
+    var AUDIO_HINT_TEXT = '👇 按下面的播放鍵收聽錄音';
+
+    function enlargeAudio(a) {
+      try {
+        a.style.setProperty('width',      '100%',              'important');
+        a.style.setProperty('min-width',  '100%',              'important');
+        a.style.setProperty('height',     AUDIO_BAR_H + 'px',  'important');
+        a.style.setProperty('min-height', AUDIO_BAR_H + 'px',  'important');
+        a.style.setProperty('display',    'block',             'important');
+        a.style.setProperty('margin',     '4px 0 0',           'important');
+      } catch (e) {}
+
+      try {
+        // Don't double-insert if Botpress re-runs us over the same node.
+        var prev = a.previousElementSibling;
+        if (prev && prev.getAttribute && prev.getAttribute('data-vt-audio-hint') === '1') return;
+        var hint = document.createElement('div');
+        hint.setAttribute('data-vt-audio-hint', '1');
+        hint.textContent = AUDIO_HINT_TEXT;
+        hint.style.cssText = 'font-size:17px;font-weight:700;line-height:1.4;' +
+                             'color:#1f2937;margin:2px 0 4px;display:block;text-align:left;';
+        if (a.parentNode) a.parentNode.insertBefore(hint, a);
+        // Once playback starts the prompt has done its job — fade, don't remove,
+        // so the layout doesn't jump under the participant's finger.
+        a.addEventListener('play', function () {
+          hint.style.transition = 'opacity .3s';
+          hint.style.opacity    = '0.35';
+        }, { once: true });
+      } catch (e) {}
+    }
+
     function attachToAudio(a) {
       if (trackedAudios.has(a)) return;
       trackedAudios.add(a);
       setStatus('ready', 'Audio detected — listeners attached');
-      // Hide the browser's native playback-speed button from the audio controls.
-      try { a.setAttribute('controlsList', 'noplaybackrate'); } catch (e) {}
+      // Remove Chrome/Edge's overflow (⋮) menu from the audio controls entirely.
+      //
+      // BOTH flags are needed, verified by screenshot 2026-08-16: that menu
+      // holds two items, playback speed AND download. 'noplaybackrate' alone
+      // (what this line used to be) only emptied out the speed option — the ⋮
+      // itself stayed, because Download was still in there. 'nodownload' alone
+      // leaves it too. Together the button disappears.
+      //
+      // 'noremoteplayback' is deliberately NOT set — it isn't needed to hide
+      // the menu, and it would also take away casting.
+      //
+      // Safari ignores controlsList altogether, but its audio player has no
+      // overflow menu or speed control to begin with, so iOS already looks the
+      // way this makes Chrome look. That parity is the point: no speed control
+      // on any platform (see the June decision to drop the custom speed pill).
+      try { a.setAttribute('controlsList', 'noplaybackrate nodownload'); } catch (e) {}
+      // Make the bar big and obvious (see enlargeAudio above).
+      enlargeAudio(a);
       // Read-aloud arbitration: stop speaking when this clip plays (see ttsRegisterMedia).
       ttsRegisterMedia(a);
       a.addEventListener('play',  function(){ logAudioRow('Click Play Audio (HK)', hkNow()); });
@@ -778,32 +847,195 @@
     }
 
     var _imgPairs = [];
+
+    // Drop pairs whose media has left the DOM. Botpress re-renders the
+    // transcript, so without this the lists — and this loop's per-tick work —
+    // grow for the whole session, and orphaned buttons pile up in the page.
+    // (Added 2026-08-16 with the image-rendering pass; the lists were never
+    // pruned before.)
+    function prunePairs(list, key) {
+      for (var i = list.length - 1; i >= 0; i--) {
+        var el = list[i][key];
+        if (!el || !el.isConnected) {
+          var b = list[i].btn;
+          if (b && b.parentNode) b.parentNode.removeChild(b);
+          list.splice(i, 1);
+        }
+      }
+    }
+
     setInterval(function() {
+      // Nothing on screen to track, or the tab is in the background — skip the
+      // whole tick rather than measuring for no one.
+      if (document.hidden) return;
+      prunePairs(_imgPairs, 'img');
+      prunePairs(_vidPairs, 'vid');
+      if (!_imgPairs.length && !_vidPairs.length) return;
+
+      // READ first, WRITE second. Interleaving getBoundingClientRect() with
+      // style writes forces a layout per item; batching keeps it to one.
       var barTop = composerTopY();
-      _imgPairs.forEach(function(p) {
-        var r = p.img.getBoundingClientRect();
-        var btnTop = Math.round(r.bottom - 38);
-        var hidden = r.width < 60 || r.height < 60 ||
-                     r.bottom <= 0 || r.top >= window.innerHeight ||
-                     (btnTop + 32) > barTop;   // button would overlap the input bar → hide behind it
-        p.btn.style.display = hidden ? 'none' : 'flex';
-        if (!hidden) {
-          p.btn.style.top  = btnTop + 'px';
-          p.btn.style.left = Math.round(r.right  - 38) + 'px';
-        }
-      });
+      var vh = window.innerHeight;
+      var plan = [];
+
+      for (var i = 0; i < _imgPairs.length; i++) {
+        var r = _imgPairs[i].img.getBoundingClientRect();
+        var top = Math.round(r.bottom - 38);
+        plan.push({
+          btn: _imgPairs[i].btn,
+          hidden: r.width < 60 || r.height < 60 || r.bottom <= 0 || r.top >= vh ||
+                  (top + 32) > barTop,   // button would overlap the input bar → hide behind it
+          top: top,
+          left: Math.round(r.right - 38)
+        });
+      }
       // iOS landscape button sits at the video's top-right (native controls are at the bottom)
-      _vidPairs.forEach(function(p) {
-        var r = p.vid.getBoundingClientRect();
-        var hidden = r.width < 80 || r.height < 60 || r.bottom <= 40 ||
-                     r.top >= window.innerHeight - 20 || r.top + 42 > barTop;
-        p.btn.style.display = hidden ? 'none' : 'flex';
-        if (!hidden) {
-          p.btn.style.top  = Math.round(r.top + 6) + 'px';
-          p.btn.style.left = Math.round(r.right - 42) + 'px';
+      for (var j = 0; j < _vidPairs.length; j++) {
+        var vr = _vidPairs[j].vid.getBoundingClientRect();
+        plan.push({
+          btn: _vidPairs[j].btn,
+          hidden: vr.width < 80 || vr.height < 60 || vr.bottom <= 40 ||
+                  vr.top >= vh - 20 || vr.top + 42 > barTop,
+          top: Math.round(vr.top + 6),
+          left: Math.round(vr.right - 42)
+        });
+      }
+
+      for (var k = 0; k < plan.length; k++) {
+        var pl = plan[k];
+        pl.btn.style.display = pl.hidden ? 'none' : 'flex';
+        if (!pl.hidden) {
+          pl.btn.style.top  = pl.top + 'px';
+          pl.btn.style.left = pl.left + 'px';
         }
-      });
+      }
     }, 100);
+
+    // ── Conversation images render large inline ──────────────────────────────
+    // Added 2026-08-16 (emon): Botpress showed images as small thumbnails, so
+    // participants had to tap to enlarge before they could read anything. They
+    // now render as large as they can within the bubble AND the viewport; the
+    // tap-to-enlarge lightbox is unchanged.
+    //
+    // Applied as INLINE styles from attachToImage, not a shadow-root
+    // stylesheet: these nodes live in Botpress's shadow DOM (document CSS can't
+    // reach them — same gotcha as the pain scale), and going through
+    // attachToImage lets this reuse that function's avatar/icon guards.
+    var IMG_MAX_VH = 70;   // tallest an inline image may get, as a % of viewport height
+
+    // Only IN-CHAT message images get resized. The bot avatar, header logo and
+    // anything outside a message block must be left exactly as Botpress sizes
+    // it. scanAll() already scopes the walk to #bp-embedded, but it falls back
+    // to document.body if that container hasn't rendered yet — which would
+    // otherwise sweep in page chrome like the lightbox's own <img>.
+    function isChatMessageImage(img) {
+      try {
+        if (!img || !img.closest) return false;
+        // Must sit inside an actual message block / bubble.
+        if (!img.closest('[class*="bpMessageBlocks"]') && !img.closest('.bpMessageContainer')) return false;
+        // Never touch avatars, headers or logos, whatever their size.
+        if (img.closest('[class*="vatar"],[class*="eader"],[class*="ogo"]')) return false;
+        // Never touch our own page chrome (lightbox image, status bar, etc.).
+        if (img.id && img.id.indexOf('vt-') === 0) return false;
+        if (img.closest('#vt-lightbox')) return false;
+        return true;
+      } catch (e) { return false; }
+    }
+
+    // Sizing rule: grow to the bubble's width, but never past IMG_MAX_VH of the
+    // viewport, and never upscale beyond the file's own resolution (which would
+    // just look blurry). max-width/max-height with auto width/height does all
+    // three at once and keeps the aspect ratio — no letterboxing, no overflow.
+    // Placeholder shown while the file downloads. Measured 2026-08-16: an <img>
+    // with auto width/height occupies 0x0 until it has loaded, so the message
+    // looked EMPTY and the next bot message appeared to overtake it. The
+    // skeleton reserves a visible box immediately; it is swapped for the real
+    // sizing on 'load'.
+    //
+    // Needs a stylesheet (keyframes can't be inline), injected into Botpress's
+    // shadow root — document CSS can't reach it. Injected once per root.
+    var IMG_LOADING_MIN_H = 160;   // px of reserved space while loading
+    var _imgCssRoots = (typeof WeakSet === 'function') ? new WeakSet() : null;
+
+    function ensureImgLoadingCSS(node) {
+      try {
+        var root = node.getRootNode && node.getRootNode();
+        if (!root || !root.appendChild) return;
+        if (_imgCssRoots) { if (_imgCssRoots.has(root)) return; _imgCssRoots.add(root); }
+        else if (root.querySelector && root.querySelector('#vt-img-css')) return;
+        var st = document.createElement('style');
+        st.id = 'vt-img-css';
+        st.textContent =
+          '@keyframes vt-img-shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}' +
+          'img.vt-img-loading{' +
+            'width:100%!important;min-height:' + IMG_LOADING_MIN_H + 'px!important;' +
+            'border-radius:8px!important;' +
+            'background-image:linear-gradient(90deg,#e9edf0 25%,#f7f9fa 37%,#e9edf0 63%)!important;' +
+            'background-size:200% 100%!important;' +
+            'animation:vt-img-shimmer 1.2s ease-in-out infinite!important;}' +
+          '@media (prefers-reduced-motion:reduce){img.vt-img-loading{animation:none!important;}}';
+        root.appendChild(st);
+      } catch (e) {}
+    }
+
+    // Final sizing, applied once the image has real pixels to measure.
+    function applyImgSizing(img) {
+      try {
+        img.classList.remove('vt-img-loading');
+        img.style.removeProperty('min-height');
+        img.style.setProperty('width',      'auto',              'important');
+        img.style.setProperty('height',     'auto',              'important');
+        img.style.setProperty('max-width',  '100%',              'important');
+        img.style.setProperty('max-height', IMG_MAX_VH + 'vh',   'important');
+        img.style.setProperty('display',    'block',             'important');
+      } catch (e) {}
+    }
+
+    function showImageFullWidth(img) {
+      if (!isChatMessageImage(img)) return;
+
+      // Let the browser fetch and decode it without holding up the rest of the
+      // conversation, and rank it above lower-priority requests.
+      try {
+        img.setAttribute('decoding', 'async');
+        if (!img.getAttribute('fetchpriority')) img.setAttribute('fetchpriority', 'high');
+      } catch (e) {}
+
+      if (img.complete && img.naturalWidth > 0) {
+        applyImgSizing(img);                 // already downloaded — no skeleton needed
+      } else {
+        // Reserve the space and show the skeleton NOW, so the bubble is never
+        // blank. No inline width/height here: an inline !important would beat
+        // the stylesheet and collapse the placeholder back to 0x0.
+        ensureImgLoadingCSS(img);
+        try {
+          img.classList.add('vt-img-loading');
+          img.style.setProperty('max-width',  '100%',            'important');
+          img.style.setProperty('max-height', IMG_MAX_VH + 'vh', 'important');
+          img.style.setProperty('display',    'block',           'important');
+        } catch (e) {}
+        if (!img._vtLoadWired) {
+          img._vtLoadWired = true;
+          img.addEventListener('load',  function () { applyImgSizing(img); }, { once: true });
+          // On failure, drop the skeleton rather than shimmer forever.
+          img.addEventListener('error', function () {
+            try { img.classList.remove('vt-img-loading'); img.style.removeProperty('min-height'); } catch (e) {}
+          }, { once: true });
+        }
+      }
+
+      // Botpress can wrap the <img> in a box with its own size cap — relax that
+      // too, or the image is still boxed in. Only the caps are touched; the
+      // parent's own width and layout are left alone so nothing else shifts.
+      try {
+        var par = img.parentElement;
+        if (par) {
+          par.style.setProperty('max-width',  '100%', 'important');
+          par.style.setProperty('max-height', 'none', 'important');
+          par.style.setProperty('height',     'auto', 'important');
+        }
+      } catch (e) {}
+    }
 
     function attachToImage(img) {
       if (trackedImages.has(img)) return;
@@ -813,6 +1045,10 @@
       var br = window.getComputedStyle(img).borderRadius || '';
       if (br.indexOf('50%') !== -1 || br === '9999px' || parseFloat(br) >= 9999) return;
       trackedImages.add(img);
+
+      // Size it for the bubble + viewport, showing a loading skeleton until the
+      // file arrives. The 'load' hand-off lives inside showImageFullWidth.
+      showImageFullWidth(img);
 
       img.style.cursor = 'zoom-in';
 
@@ -2512,48 +2748,53 @@
       return null;
     }
 
-    // ── Start each session muted ─────────────────────────────
-    // Botpress's speaker defaults to unmuted, which would make read-aloud start
-    // talking on its own. We mute it once per session so the participant opts in.
+    // ── Start each session UNMUTED (read-aloud on by default) ─────────────
+    // Changed 2026-08-16 (emon): read-aloud used to start muted and the
+    // participant had to opt in. Elderly participants were missing it entirely,
+    // so sound is now ON by default and they opt OUT with the speaker icon.
+    //
+    // Botpress's own speaker already defaults to unmuted, so this normally has
+    // nothing to click — it exists to undo a mute that persisted in
+    // localStorage from an earlier visit.
     //
     // The "already done" flag is deliberately stored under a bp-webchat- prefix:
     // the 7-day reset block at the top of this file wipes every bp-webchat-* key,
-    // so this flag dies with the conversation and the NEXT session starts muted
-    // again — while an unmute during a session still sticks across reloads.
-    var TTS_MUTE_FLAG   = 'bp-webchat-vt-initial-mute';
-    var _ttsMuteSettled = false;   // true once the mute is applied (or given up on)
+    // so this flag dies with the conversation and the NEXT session starts
+    // unmuted again — while a mute during a session still sticks across reloads.
+    var TTS_SOUND_FLAG   = 'bp-webchat-vt-initial-sound';
+    var _ttsSoundSettled = false;  // true once the initial state is applied (or given up on)
 
-    function ttsApplyInitialMute() {
+    function ttsApplyInitialUnmute() {
       // Already handled earlier this session (e.g. a reload) — respect whatever
       // the user has since chosen.
       try {
-        if (localStorage.getItem(TTS_MUTE_FLAG) === '1') { _ttsMuteSettled = true; return true; }
+        if (localStorage.getItem(TTS_SOUND_FLAG) === '1') { _ttsSoundSettled = true; return true; }
       } catch (e) {}
       var cur = bpSoundIsOn();
       if (cur === null) return false;                 // can't read state yet — retry
-      if (cur === false) {                            // already muted, nothing to click
-        try { localStorage.setItem(TTS_MUTE_FLAG, '1'); } catch (e) {}
-        _ttsMuteSettled = true;
+      if (cur === true) {                             // already unmuted, nothing to click
+        try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e) {}
+        _ttsOn = true;
+        _ttsSoundSettled = true;
         return true;
       }
       var btn = bpSoundBtn();
       if (!btn) return false;                         // button not rendered yet — retry
       try { btn.click(); } catch (e) { return false; }
-      try { localStorage.setItem(TTS_MUTE_FLAG, '1'); } catch (e) {}
-      _ttsOn = false;
-      _ttsMuteSettled = true;
-      console.log('[VideoTrack][TTS] muted for the start of this session — ' +
-                  'tap the speaker in the header to hear the messages read aloud');
+      try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e) {}
+      _ttsOn = true;
+      _ttsSoundSettled = true;
+      console.log('[VideoTrack][TTS] unmuted for the start of this session — ' +
+                  'tap the speaker in the header to silence the messages');
       return true;
     }
 
     // Botpress's speaker button is the MASTER switch — we only follow it.
     // Unmuted (sound on) → read-aloud on. Muted → silent, queue dropped.
     function ttsWatchSound() {
-      // Until the start-of-session mute has landed, ignore Botpress's default
-      // "unmuted" — otherwise a fast first message could be read aloud in the
-      // gap before we get the chance to mute.
-      if (!_ttsMuteSettled) return;
+      // Until the start-of-session sound state has landed, don't follow — a
+      // stale stored "muted" could otherwise stick before we clear it.
+      if (!_ttsSoundSettled) return;
       var cur = bpSoundIsOn();
       if (cur === null || cur === _ttsOn) return;
       _ttsOn = cur;
@@ -2633,10 +2874,18 @@
       if (!c || !c.querySelectorAll) return [];
       var rows = c.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
       if (rows.length) return rows;
-      // Fallback if the attribute ever changes: everything not explicitly outgoing.
+      // Fallback if the attribute ever changes: everything that is neither the
+      // user's own message nor a system row.
+      //
+      // "system" is the date separator ("Today"). Excluding it here is the fix
+      // for read-aloud announcing "Today" at the start of a conversation
+      // (2026-08-16, emon): the query above is still empty until the first bot
+      // message renders, so this fallback ran, and it treated the separator as
+      // a bot message because it only checked for "outgoing".
       var all = c.querySelectorAll('.bpMessageContainer'), out = [];
       for (var i = 0; i < all.length; i++) {
-        if (all[i].getAttribute('data-direction') !== 'outgoing') out.push(all[i]);
+        var dir = all[i].getAttribute('data-direction');
+        if (dir !== 'outgoing' && dir !== 'system') out.push(all[i]);
       }
       return out;
     }
@@ -2737,17 +2986,17 @@
       ttsWireGesturePriming();
       ttsWireUserScrollDetect();
 
-      // Mute for the start of the session. Retried because the header button and
-      // Botpress's stored sound state both appear a moment after 'ready'.
-      var muteTries = 0;
-      var muteIv = setInterval(function () {
-        if (ttsApplyInitialMute() || ++muteTries >= 25) {
-          clearInterval(muteIv);
-          if (!_ttsMuteSettled) {
+      // Unmute for the start of the session. Retried because the header button
+      // and Botpress's stored sound state both appear a moment after 'ready'.
+      var soundTries = 0;
+      var soundIv = setInterval(function () {
+        if (ttsApplyInitialUnmute() || ++soundTries >= 25) {
+          clearInterval(soundIv);
+          if (!_ttsSoundSettled) {
             // Couldn't find the button or read the state — unblock the follower
-            // so the speaker button still works, just without the initial mute.
-            _ttsMuteSettled = true;
-            console.warn('[VideoTrack][TTS] could not apply the start-of-session mute — ' +
+            // so the speaker button still works, just without the initial unmute.
+            _ttsSoundSettled = true;
+            console.warn('[VideoTrack][TTS] could not apply the start-of-session unmute — ' +
                          'run __vtTTS.findSound() and send me the output.');
           }
         }
@@ -2850,7 +3099,7 @@
                  chunksLeft: _ttsQueue.length, messagesQueued: _ttsMsgQueue.length,
                  busy: _ttsBusy, mediaPlaying: ttsMediaPlaying(),
                  bpSoundOn: bpSoundIsOn(), bpSoundKey: bpSoundKey(),
-                 initialMuteSettled: _ttsMuteSettled,
+                 initialSoundSettled: _ttsSoundSettled,
                  voice: _ttsVoice && (_ttsVoice.name + ' [' + _ttsVoice.lang + ']'),
                  cantonese: _ttsVoiceIsCanto };
       }
