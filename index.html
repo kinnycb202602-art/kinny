@@ -1530,6 +1530,74 @@
       var b = startBtnEl();
       if (b) b.classList.remove('show');
     }
+
+    // ── 結束本週課程 → a proper ending, not the login door ──────
+    // Picking 結束本週課程 sends "0", and Studio's Main flow routes that to its
+    // End1 node — a REAL end node. Botpress ends the conversation, the
+    // transcript empties, and updateStartUI() sees "no messages" and falls back
+    // to the welcome screen with 開始. To the participant that reads as being
+    // thrown out and asked to log in again the moment they finish, which is the
+    // opposite of what finishing should feel like.
+    //
+    // Fixing the flow itself needs a Studio change (End1 should loop back, not
+    // end). Until then this page owns the ending: we remember that the user
+    // chose to finish and show a calm completion screen instead of the door.
+    // sessionStorage, so it survives a reload but not a new tab or a new day.
+    var WEEK_END_FLAG = 'vt_week_ended';
+    function weekEnded() {
+      try { return sessionStorage.getItem(WEEK_END_FLAG) === '1'; } catch (e) { return false; }
+    }
+    function markWeekEnded(on) {
+      try {
+        if (on) sessionStorage.setItem(WEEK_END_FLAG, '1');
+        else sessionStorage.removeItem(WEEK_END_FLAG);
+      } catch (e) {}
+      if (!on) hideWeekEndScreen();
+    }
+    var _weekEndEl = null;
+    function hideWeekEndScreen() {
+      if (_weekEndEl) { try { _weekEndEl.remove(); } catch (e) {} _weekEndEl = null; }
+    }
+    function showWeekEndScreen() {
+      if (_weekEndEl && _weekEndEl.isConnected) return;
+      var FONT = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
+      var back = document.createElement('div');
+      back.id = 'vt-week-end';
+      // Below the popups (…647) so a load-failed or restart popup still wins,
+      // above the chat so the empty transcript never shows through.
+      back.style.cssText = 'position:fixed;inset:0;z-index:2147483200;background:#fff;' +
+        'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+        'padding:24px;text-align:center;font-family:' + FONT + ';color:#1a2420;';
+      var ic = document.createElement('div');
+      ic.style.cssText = 'font-size:64px;line-height:1;margin:0 0 18px;';
+      ic.textContent = '👋';
+      back.appendChild(ic);
+      var h = document.createElement('div');
+      h.style.cssText = 'font-size:28px;font-weight:750;line-height:1.35;margin:0 0 14px;';
+      h.textContent = '本週課程已完成';
+      back.appendChild(h);
+      var p = document.createElement('div');
+      p.style.cssText = 'font-size:19px;line-height:1.7;color:#3d4a45;max-width:420px;margin:0 0 30px;';
+      p.textContent = '多謝你今日的參與。你可以先休息一下，下星期我們會再提醒你。';
+      back.appendChild(p);
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '🔄  重新開始對話';
+      btn.style.cssText = 'border:2px solid #2f7d63;background:#fff;color:#2f7d63;' +
+        'border-radius:16px;padding:15px 26px;font-family:' + FONT + ';font-size:18px;' +
+        'font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;';
+      btn.addEventListener('click', function () {
+        console.log('[VideoTrack] Week-end screen → restart');
+        markWeekEnded(false);
+        restartConversation();
+      });
+      back.appendChild(btn);
+      document.body.appendChild(back);
+      _weekEndEl = back;
+      hideStartButton();
+      try { ttsStop(); } catch (e) {}
+      console.log('[VideoTrack] 結束本週課程 — showing the completion screen instead of the login door');
+    }
     // Show/hide the whole Botpress composer bar (.bpComposerContainer) via a
     // style injected into the shadow root (survives Botpress re-renders).
     // Writes only on change — otherwise re-setting textContent every scan would
@@ -1593,10 +1661,20 @@
         active = false;                      // welcome / empty (fresh load or after reset)
       }
       _convStarted = active;
+      // A real message on screen means a live conversation again (the user
+      // restarted, or Botpress carried on) — the week-end screen has served its
+      // purpose and must not linger over it.
+      if (active && weekEnded()) markWeekEnded(false);
       if (active) {
         hideStartButton();
         setComposerBarHidden(false);
         setWelcomeLayout(false);
+      } else if (weekEnded()) {
+        // Finished on purpose — show the ending, never the login door.
+        setComposerBarHidden(true);
+        hideStartButton();
+        showWeekEndScreen();
+        return;
       } else {
         // Back at welcome (fresh load or Restart button). Clear any widget left
         // over from the previous conversation, otherwise its stale _painScaleEl
@@ -2155,7 +2233,7 @@
           b.textContent = it.label || ('第 ' + it.num + ' 節');
           if (it.on) {
             b.style.cssText = BASE + ENA;
-            (function (num) {
+            (function (num, isEnd) {
               b.addEventListener('click', function (e) {
                 e.stopPropagation();
                 if (wrap._done) return; wrap._done = true;
@@ -2163,9 +2241,13 @@
                 b.style.cssText = BASE + SEL;      // selected feedback (like the exercise widget)
                 sendChoice(String(num));           // send just the number
                 console.log('[VideoTrack] Session menu answered:', String(num));
+                // 結束本週課程 sends 0, which Studio routes to its End1 end node.
+                // Botpress then empties the transcript, so without this the page
+                // would drop the participant back at the 開始 / login screen.
+                if (isEnd) markWeekEnded(true);
                 setTimeout(hidePainScale, 220);
               });
-            })(it.num);
+            })(it.num, !!it.end);
           } else {
             b.disabled = true;
             b.style.cssText = BASE + DIS;
@@ -2907,8 +2989,20 @@
     // unmuted again — while a mute during a session still sticks across reloads.
     var TTS_SOUND_FLAG   = 'bp-webchat-vt-initial-sound';
     var _ttsSoundSettled = false;  // true once the initial state is applied (or given up on)
+    // ⚠️ Two hard rules, both learned the hard way (2026-09-01). This function
+    // CLICKS Botpress's speaker button, and a stray click makes the speaker look
+    // broken to the user: they tap mute, and a moment later it is unmuted again.
+    //   1. Never click after the user has touched the speaker themselves.
+    //   2. Never click more than once per page load, no matter how many times
+    //      ttsInit() is entered. Botpress fires BOTH 'ready' and 'webchat:ready'
+    //      (and again on reconnect), so ttsInit used to run up to 3× and start
+    //      three independent unmute retry loops.
+    var _ttsUserTouchedSound = false;
+    var _ttsUnmuteClicked    = false;
 
     function ttsApplyInitialUnmute() {
+      // The user has taken control — their choice wins, permanently.
+      if (_ttsUserTouchedSound) { _ttsSoundSettled = true; return true; }
       // Already handled earlier this session (e.g. a reload) — respect whatever
       // the user has since chosen.
       try {
@@ -2922,8 +3016,10 @@
         _ttsSoundSettled = true;
         return true;
       }
+      if (_ttsUnmuteClicked) { _ttsSoundSettled = true; return true; }   // once per load, ever
       var btn = bpSoundBtn();
       if (!btn) return false;                         // button not rendered yet — retry
+      _ttsUnmuteClicked = true;
       try { btn.click(); } catch (e) { return false; }
       try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e) {}
       _ttsOn = true;
@@ -3123,7 +3219,14 @@
       }
     }
 
+    var _ttsInited = false;
     function ttsInit() {
+      // Botpress fires 'ready' AND 'webchat:ready', and again after a reconnect,
+      // so onReady can run several times. Without this guard each entry started
+      // its own 250ms poller and its own unmute retry loop — which is how the
+      // speaker button ended up being clicked back after the user muted it.
+      if (_ttsInited) { console.log('[VideoTrack][TTS] init already done — ignoring repeat ready event'); return; }
+      _ttsInited = true;
       if (!_ttsSupported) {
         console.warn('[VideoTrack][TTS] speechSynthesis unavailable on this browser');
         return;
@@ -3640,6 +3743,7 @@
     // (see the storage block at the top of this file), and re-stamps
     // vt_session_started so the window restarts from this new conversation.
     function restartConversation() {
+      markWeekEnded(false);   // a restart always leaves the completion screen
       var removed = [];
       try {
         for (var i = 0; i < localStorage.length; i++) {
@@ -3672,6 +3776,23 @@
     // The only class we trust is the specific icon name.
     var RESTART_LABEL_RE = /restart|reset\s*conversation|new\s*conversation|重新開始|重設/i;
     var RESTART_ICON_RE  = /lucide-rotate-ccw/;
+    // Botpress's speaker control, verified live in the shadow root:
+    //   <div class="bpHeaderContentActionsIcons" title="Disable chat sounds">
+    //     <svg class="lucide lucide-volume2 lucide-volume-2">
+    // The title flips to "Enable chat sounds" and the icon to lucide-volume-x
+    // when muted, so match on either. This is only used to notice that the USER
+    // tapped it — we never swallow the click.
+    function isSoundControl(el, sr) {
+      for (var n = el; n && n !== sr; n = n.parentNode) {
+        if (!n || n.nodeType !== 1 || !n.getAttribute) continue;
+        var label = [n.getAttribute('aria-label'), n.getAttribute('title'),
+                     n.getAttribute('data-testid')].filter(Boolean).join(' ');
+        if (label && /sound|volume|mute|聲|音/i.test(label)) return n;
+        var cls = n.className; if (cls && typeof cls === 'object') cls = cls.baseVal || '';
+        if (cls && /lucide-volume/i.test(cls)) return n;
+      }
+      return null;
+    }
     function isRestartControl(el, sr) {
       for (var n = el; n && n !== sr; n = n.parentNode) {
         if (!n || n.nodeType !== 1 || !n.getAttribute) continue;
@@ -3707,6 +3828,18 @@
         console.log('[VideoTrack] header controls seen:', seen.slice(0, 25));
       } catch (e) {}
       sr.addEventListener('click', function (e) {
+        // The speaker is the user's switch, not ours. Record the tap and let it
+        // through untouched, so the start-of-session unmute can never click
+        // their choice back a moment later.
+        if (isSoundControl(e.target, sr)) {
+          if (!_ttsUserTouchedSound) {
+            _ttsUserTouchedSound = true;
+            _ttsSoundSettled = true;
+            try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e2) {}
+            console.log('[VideoTrack][TTS] speaker tapped by the user — start-of-session unmute disabled');
+          }
+          return;
+        }
         if (popupOpen()) return;
         var hit = isRestartControl(e.target, sr);
         if (!hit) return;
@@ -3813,6 +3946,9 @@
                   !!sr.querySelector('[class*="bpMessageListMarquee"]');
       }
       if (healthy) { _healthyAt = Date.now(); return; }
+      // Finishing the week empties the transcript on purpose — that is not a
+      // stuck webchat, and "healing" it would reload the completion screen away.
+      if (weekEnded()) { _healthyAt = Date.now(); return; }
       if (popupOpen()) return;              // already asking the user something
       // Measure from the last healthy moment, or from page load if it has
       // never been healthy at all.
@@ -3969,6 +4105,10 @@
                             return [].slice.call(sr.querySelectorAll('[aria-label],[title]'))
                               .map(function (n) { return (n.getAttribute('aria-label') || n.getAttribute('title')); });
                           } };
+      // Week-end completion screen: __vtWeekEnd.show() / .hide() / .state()
+      window.__vtWeekEnd = { show: function () { markWeekEnded(true); updateStartUI(); },
+                             hide: function () { markWeekEnded(false); updateStartUI(); },
+                             state: weekEnded };
       // Why is (or isn't) the self-heal firing?  __vtHeal.why()
       window.__vtHeal = {
         why: function () {
