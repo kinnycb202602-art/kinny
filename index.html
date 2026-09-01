@@ -4101,7 +4101,8 @@
     // into a small panel and show __vtTTS.state() beside them. Screenshot it
     // and the answer is usually one line ("skip — muted", "no Chinese voice",
     // "primed" with everSpoke:false, …). Off unless the URL asks for it.
-    if (new URLSearchParams(window.location.search).has('ttsdebug')) {
+    if (new URLSearchParams(window.location.search).has('ttsdebug') ||
+        new URLSearchParams(window.location.search).has('uidebug')) {
       (function () {
         var lines = [];
         function tee(orig) {
@@ -4135,14 +4136,56 @@
           catch (e) { st = { error: e && e.message }; }
           var keys = ['platform', 'supported', 'on', 'armed', 'primed', 'everSpoke',
                       'speaking', 'pending', 'busy', 'bpSoundOn', 'initialSoundSettled', 'voice'];
-          var head = keys.map(function (k) { return k + '=' + st[k]; }).join('  ');
-          box.textContent = head + '\n──────────\n' + lines.join('\n');
+          var head = 'TTS  ' + keys.map(function (k) { return k + '=' + st[k]; }).join('  ');
+
+          // ── Composer / layout state ──
+          // The iPhone report is "no input bar after a refresh, or an input bar
+          // that never raises the keyboard". These fields separate the three
+          // candidate causes that look identical on a phone:
+          //   • our own rule hid it            → hideRule non-empty
+          //   • Botpress never rendered it     → input=false
+          //   • it is below the visible area   → barBottom > innerH
+          //   • it is there but readOnly       → ro=true  (iOS shows no keyboard)
+          var ui = 'UI   ';
+          try {
+            var sr = bpShadowRoot();
+            var bar = sr && sr.querySelector('.bpComposerContainer');
+            var inp = sr && sr.querySelector('.bpComposerInput');
+            var hideSt = sr && sr.querySelector('#vt-hide-composer');
+            var w = (typeof window.__vtWhy === 'function') ? window.__vtWhy() : {};
+            var rect = bar && bar.getBoundingClientRect();
+            var vv = window.visualViewport;
+            ui += 'shadow=' + !!sr +
+                  '  bar=' + !!bar +
+                  '  barDisplay=' + (bar ? getComputedStyle(bar).display : '-') +
+                  '  barBottom=' + (rect ? Math.round(rect.bottom) : '-') +
+                  '  innerH=' + window.innerHeight +
+                  '  visualH=' + (vv ? Math.round(vv.height) : '-') +
+                  '\n     input=' + !!inp +
+                  '  ro=' + (inp ? !!inp.readOnly : '-') +
+                  '  dis=' + (inp ? !!inp.disabled : '-') +
+                  '  hideRule="' + (hideSt ? (hideSt.textContent || '').slice(0, 40) : 'no style el') + '"' +
+                  '\n     convStarted=' + w.convStarted +
+                  '  enabled=' + w.enabled +
+                  '  allowsTyping=' + w.allowsTyping +
+                  '  idle=' + w.idle +
+                  '  postSendLock=' + w.postSendLock +
+                  '  painScale=' + w.painScale +
+                  '  rows=' + (sr ? sr.querySelectorAll('.bpMessageContainer').length : '-') +
+                  '  startBtn=' + (function () {
+                      var b = document.getElementById('vt-start-btn');
+                      return b ? getComputedStyle(b).display : 'none';
+                    })();
+          } catch (e) { ui += 'error: ' + (e && e.message); }
+
+          box.textContent = head + '\n' + ui + '\n──────────\n' + lines.join('\n');
         }, 1000);
       })();
     }
 
     if (new URLSearchParams(window.location.search).has('debug') ||
-        new URLSearchParams(window.location.search).has('ttsdebug')) {
+        new URLSearchParams(window.location.search).has('ttsdebug') ||
+        new URLSearchParams(window.location.search).has('uidebug')) {
       document.getElementById('vt-status-bar').style.display = 'flex';
       // Manual triggers for testing the pain-scale widget without the bot:
       //   __vtPainScale.show(0,10)  /  __vtPainScale.hide()
