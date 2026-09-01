@@ -64,6 +64,16 @@
       bottom: auto;
       transform: translateX(-50%);
       z-index: 2147483646;
+      /* ⚠️ A fixed-position box with `left` but no `right`/`width` is
+         shrink-to-fit, and its available width is only (viewport − left) — half
+         the screen. On a 360px phone that is 180px, less than 144px of padding
+         plus the label, so 開始 wrapped onto two lines. `width: max-content`
+         sizes to the content instead of that half-viewport budget, and nowrap
+         makes a regression obvious rather than silent. */
+      width: max-content;
+      max-width: calc(100vw - 48px);
+      box-sizing: border-box;
+      white-space: nowrap;
       padding: 18px 72px;
       font-family: sans-serif;
       font-size: 19px;
@@ -85,6 +95,11 @@
     body.vt-modal-open #vt-start-btn { display: none !important; }
     #vt-start-btn:hover  { background: #245f4b; }
     #vt-start-btn:active { transform: translateX(-50%) scale(0.97); }
+    /* Phones: the 72px side padding is a desktop luxury. Keep the tap target
+       generous vertically, trim it horizontally. */
+    @media (max-width: 430px) {
+      #vt-start-btn { padding: 18px 56px; }
+    }
 
     /* ── Status bar visibility ───────────────────────────────
        Hidden by default for end users.
@@ -1270,6 +1285,13 @@
           '.bpMessageListViewport{padding-left:6px!important;padding-right:6px!important;}' +
           '.bpMessageContainer{gap:4px!important;}' +
           '.bpMessageBlocksBubble{max-width:95%!important;}' +
+        '}' +
+        // Botpress truncates its own header title with an ellipsis at 16px on a
+        // narrow screen — "Kinny - 靜觀·運動·與你同行" lost its last two words.
+        // These live in the shadow root: a document-level rule cannot reach them.
+        '@media (max-width:430px){' +
+          '.bpHeaderContentTitle{font-size:14px!important;}' +
+          '.bpHeaderContentDescription{font-size:12px!important;}' +
         '}';
       sr.appendChild(st);
     }
@@ -3564,8 +3586,10 @@
       hideScrollHint();
       var bar = document.createElement('div');
       bar.id = 'vt-scroll-hint';
+      // width:max-content — a fixed box with `left` and no `width` is limited to
+      // (viewport − left), i.e. half the screen. See #vt-start-btn's CSS note.
       bar.style.cssText = 'position:fixed;left:50%;top:72px;transform:translateX(-50%);z-index:2147483000;' +
-        'display:flex;align-items:center;gap:10px;max-width:92vw;box-sizing:border-box;' +
+        'display:flex;align-items:center;gap:10px;width:max-content;max-width:92vw;box-sizing:border-box;' +
         'background:#fff;border:2px solid #2f7d63;border-radius:16px;padding:13px 14px 13px 16px;' +
         'box-shadow:0 10px 26px rgba(0,0,0,.18);font-family:' + KX_FONT2 + ';font-size:17px;' +
         'line-height:1.5;color:#1a2420;';
@@ -3598,7 +3622,8 @@
       // Centred, where Botpress's own (now hidden) grey circle used to sit —
       // a middle-of-screen target is easier to find and hit than a corner one.
       b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);' +
-        'bottom:104px;z-index:2147483000;display:none;max-width:92vw;' +
+        'bottom:104px;z-index:2147483000;display:none;' +
+        'width:max-content;max-width:92vw;box-sizing:border-box;white-space:nowrap;' +
         'padding:13px 18px;border-radius:99px;border:2px solid #2f7d63;background:#2f7d63;color:#fff;' +
         'font-family:' + KX_FONT2 + ';font-size:17px;font-weight:700;cursor:pointer;' +
         'box-shadow:0 8px 20px rgba(0,0,0,.22);-webkit-tap-highlight-color:transparent;';
@@ -4106,7 +4131,11 @@
                               .map(function (n) { return (n.getAttribute('aria-label') || n.getAttribute('title')); });
                           } };
       // Week-end completion screen: __vtWeekEnd.show() / .hide() / .state()
-      window.__vtWeekEnd = { show: function () { markWeekEnded(true); updateStartUI(); },
+      // show() draws the panel directly. Going through updateStartUI() would be
+      // a no-op whenever a conversation is live, because that function clears
+      // the flag the moment it sees a real message — correct in production,
+      // useless for looking at the layout.
+      window.__vtWeekEnd = { show: function () { markWeekEnded(true); showWeekEndScreen(); },
                              hide: function () { markWeekEnded(false); updateStartUI(); },
                              state: weekEnded };
       // Why is (or isn't) the self-heal firing?  __vtHeal.why()
