@@ -1273,12 +1273,10 @@
         '.bpMessageBlocksBubble table p,.bpMessageBlocksBubble table span,' +
         '.bpMessageContainer table p,.bpMessageContainer table span{' +
           'font-size:inherit!important;line-height:inherit!important;margin:0!important;}' +
-        // Botpress draws its own small grey "scroll to newest" circle at the
-        // bottom of the message list. We already show a bigger, labelled green
-        // 👇 回到最新 button, and two competing affordances for the same job
-        // confuse an elderly reader — emon picked the green one, so the grey
-        // one goes. (Selector measured live: 32px circle, --bpGray-100.)
-        '.bpMessageListContainer .bpMessageListScrollDownButton{display:none!important;}' +
+        // NOTE: Botpress's own grey "scroll to newest" circle
+        // (.bpMessageListScrollDownButton) is deliberately LEFT ALONE. It was
+        // hidden for a day in favour of a custom green button; emon reverted
+        // that on 2026-09-01 — the grey circle is the one to keep.
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -3571,10 +3569,12 @@
     // NOT shown in the restart flows: there the transcript is about to be
     // cleared, so telling them to scroll up would be nonsense.
     //
-    // The companion 回到最新 button is what makes scrolling up safe: an elderly
-    // user who scrolls back to re-read often cannot find their way to the live
-    // question again. It appears only while they are actually scrolled away
-    // from the bottom.
+    // There is no custom back-to-latest button any more (emon reverted to
+    // Botpress's own grey circle, 2026-09-01), and that circle turns out to be a
+    // "you have new messages" indicator — it does NOT appear on scroll distance
+    // alone, verified at 2200px with a real wheel scroll. So the copy must not
+    // send anyone upward without telling them how to come back: it names BOTH
+    // directions, and says carrying on is also fine.
     var _hintEl = null, _hintTimer = null;
     var KX_FONT2 = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
 
@@ -3594,7 +3594,7 @@
         'box-shadow:0 10px 26px rgba(0,0,0,.18);font-family:' + KX_FONT2 + ';font-size:17px;' +
         'line-height:1.5;color:#1a2420;';
       var txt = document.createElement('span');
-      txt.textContent = '☝️ 想看之前的內容，可以向上捲動';
+      txt.textContent = '↕️ 可上下捲動查看之前的內容，或直接繼續對話';
       bar.appendChild(txt);
       var x = document.createElement('button');
       x.type = 'button';
@@ -3606,37 +3606,21 @@
       bar.appendChild(x);
       document.body.appendChild(bar);
       _hintEl = bar;
-      // Long enough to read without hurrying, short enough not to linger.
-      _hintTimer = setTimeout(hideScrollHint, 14000);
+      // 8s, down from 14s (emon, 2026-09-01): long enough for an unhurried read,
+      // short enough that it stops sitting on top of the chat. The ✕ is still
+      // there for anyone who wants it gone sooner.
+      _hintTimer = setTimeout(hideScrollHint, 8000);
       console.log('[VideoTrack] scroll hint shown');
     }
 
     // ── 回到最新 ─────────────────────────────────────────────
-    var _backBtn = null;
-    function backBtnEl() {
-      if (_backBtn && _backBtn.isConnected) return _backBtn;
-      var b = document.createElement('button');
-      b.id = 'vt-back-latest';
-      b.type = 'button';
-      b.textContent = '👇 回到最新';
-      // Centred, where Botpress's own (now hidden) grey circle used to sit —
-      // a middle-of-screen target is easier to find and hit than a corner one.
-      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);' +
-        'bottom:104px;z-index:2147483000;display:none;' +
-        'width:max-content;max-width:92vw;box-sizing:border-box;white-space:nowrap;' +
-        'padding:13px 18px;border-radius:99px;border:2px solid #2f7d63;background:#2f7d63;color:#fff;' +
-        'font-family:' + KX_FONT2 + ';font-size:17px;font-weight:700;cursor:pointer;' +
-        'box-shadow:0 8px 20px rgba(0,0,0,.22);-webkit-tap-highlight-color:transparent;';
-      b.addEventListener('click', function () {
-        try { scrollChatToBottom(); } catch (e) {}
-        setTimeout(function () { try { scrollChatToBottom(); } catch (e) {} }, 300);
-        hideScrollHint();
-      });
-      document.body.appendChild(b);
-      _backBtn = b;
-      return b;
-    }
-    function backToLatestTick() {
+    // There is deliberately NO custom back-to-latest button here any more.
+    // We built a green one and hid Botpress's own grey circle; emon reverted
+    // that on 2026-09-01 — the grey circle is the one to keep. So the way home
+    // after scrolling up is Botpress's native control, and the CSS rule that
+    // used to hide it is gone from fixComposerInput(). Do not re-add ours: two
+    // controls for the same job is exactly what this revert removed.
+    function popupTtsGuardTick() {
       // Safety net for "any popup silences read-aloud": showChoicePopup already
       // calls ttsStop(), but if a popup ever appears by some other path this
       // catches it within one tick rather than letting speech run under it.
@@ -3644,17 +3628,6 @@
         console.log('[VideoTrack][TTS] popup is open — stopping read-aloud');
         try { ttsStop(); } catch (e) {}
       }
-      var sr = bpShadowRoot();
-      if (!sr || !hasRealMessages()) { if (_backBtn) _backBtn.style.display = 'none'; return; }
-      var sc = null;
-      try { sc = bpScrollEl(sr); } catch (e) {}
-      if (!sc) { if (_backBtn) _backBtn.style.display = 'none'; return; }
-      var away = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
-      // Hidden while a modal is up, and while they are already at the bottom.
-      var show = away > 220 && !popupOpen();
-      var b = backBtnEl();
-      var want = show ? 'block' : 'none';
-      if (b.style.display !== want) b.style.display = want;   // write only on change
     }
 
     // Redesigned 2026-08-16 for elderly readability: as few words as possible,
@@ -4037,7 +4010,7 @@
       watchdogTick();
       healthCheck();
       badAccountCheck();
-      try { backToLatestTick(); } catch (e) {}
+      try { popupTtsGuardTick(); } catch (e) {}
       if (!bpShadowRoot()) { idleNudge(); return; }
       if (!hasRealMessages()) { idleNudge(); return; }   // welcome screen — nothing to be idle in
       var sig = idleSignature();
