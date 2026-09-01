@@ -2922,14 +2922,27 @@
     // read-aloud was silent on iPhone/iPad while the webchat's chime worked
     // fine (that's an <audio> element, unlocked by different rules). A single
     // space at normal volume is inaudible but does unlock the engine.
+    var _ttsPrimeAt = 0;      // when the last priming utterance was queued
     function ttsPrime() {
       if (_ttsPrimed || !_ttsSupported) return;
       _ttsPrimed = true;
+      _ttsPrimeAt = Date.now();
       try {
         var u = new SpeechSynthesisUtterance(' ');
         u.volume = 1;
         u.rate   = 1;
         if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
+        // The PRIMING utterance carries its own onstart. Without it _ttsSpoke
+        // only ever flipped on a real message, so ttsWireGesturePriming kept
+        // treating the engine as locked and re-primed on every single tap —
+        // blank utterances piling up for the whole session. A prime that
+        // actually starts is proof the engine is unlocked; say so.
+        u.onstart = function () {
+          if (!_ttsSpoke) {
+            _ttsSpoke = true;
+            console.log('[VideoTrack][TTS] priming utterance started — engine unlocked');
+          }
+        };
         _synth.speak(u);
         console.log('[VideoTrack][TTS] primed inside a user gesture');
       } catch (e) {
@@ -3072,6 +3085,7 @@
     // shot would leave read-aloud permanently locked with no way to recover.
     // We stop re-priming as soon as an `onstart` proves the engine is live.
     function ttsWireGesturePriming() {
+      var _lastGestureAt = 0;
       function onGesture() {
         if (_ttsSpoke) {                       // proven working — stop listening
           document.removeEventListener('pointerdown', onGesture, true);
@@ -3079,6 +3093,16 @@
           document.removeEventListener('click', onGesture, true);
           return;
         }
+        // ⚠️ ONE tap on a touch screen fires pointerdown, touchend AND click.
+        // Priming on each of them queued THREE blank utterances per tap, every
+        // tap, for as long as the engine looked locked. Desktop and Android
+        // Chrome shrug that off; WebKit does not — a queue of blanks that then
+        // meets a cancel() is a known way to wedge speechSynthesis for good,
+        // which is what iPhone read-aloud silence looks like. Collapse the
+        // three events of a single tap into one priming attempt.
+        var now = Date.now();
+        if (now - _lastGestureAt < 800) return;
+        _lastGestureAt = now;
         _ttsPrimed = false;                    // allow another attempt
         ttsPrime();
       }
@@ -4071,7 +4095,54 @@
     window.addEventListener('resume', function () { ttsRearm(2000); });
 
     // ── Debug mode: show status bar when ?debug in URL ───────
-    if (new URLSearchParams(window.location.search).has('debug')) {
+    // ── On-screen TTS readout: ?ttsdebug ─────────────────────
+    // For diagnosing a phone we cannot attach a console to. Everything the
+    // read-aloud path logs starts with "[VideoTrack]", so we tee those lines
+    // into a small panel and show __vtTTS.state() beside them. Screenshot it
+    // and the answer is usually one line ("skip — muted", "no Chinese voice",
+    // "primed" with everSpoke:false, …). Off unless the URL asks for it.
+    if (new URLSearchParams(window.location.search).has('ttsdebug')) {
+      (function () {
+        var lines = [];
+        function tee(orig) {
+          return function () {
+            try {
+              var s = Array.prototype.slice.call(arguments).join(' ');
+              // Read-aloud lines only. Everything else — session-menu redraws
+              // above all — repeats every second and would bury them.
+              if (s.indexOf('[VideoTrack][TTS]') === 0 ||
+                  /speaker tapped|unmute|Voice:/i.test(s)) {
+                lines.push(s.replace('[VideoTrack]', '').trim());
+                if (lines.length > 12) lines.shift();
+              }
+            } catch (e) {}
+            orig.apply(console, arguments);
+          };
+        }
+        console.log  = tee(console.log);
+        console.warn = tee(console.warn);
+        var box = document.createElement('div');
+        box.id = 'vt-tts-debug';
+        box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483644;' +
+          'max-height:46vh;overflow:auto;background:rgba(12,22,20,.94);color:#d7f5e8;' +
+          'font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;padding:8px 10px;' +
+          'white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;';
+        document.addEventListener('DOMContentLoaded', function () { document.body.appendChild(box); });
+        if (document.body) document.body.appendChild(box);
+        setInterval(function () {
+          var st = {};
+          try { st = window.__vtTTS ? window.__vtTTS.state() : { note: 'state hook not ready' }; }
+          catch (e) { st = { error: e && e.message }; }
+          var keys = ['platform', 'supported', 'on', 'armed', 'primed', 'everSpoke',
+                      'speaking', 'pending', 'busy', 'bpSoundOn', 'initialSoundSettled', 'voice'];
+          var head = keys.map(function (k) { return k + '=' + st[k]; }).join('  ');
+          box.textContent = head + '\n──────────\n' + lines.join('\n');
+        }, 1000);
+      })();
+    }
+
+    if (new URLSearchParams(window.location.search).has('debug') ||
+        new URLSearchParams(window.location.search).has('ttsdebug')) {
       document.getElementById('vt-status-bar').style.display = 'flex';
       // Manual triggers for testing the pain-scale widget without the bot:
       //   __vtPainScale.show(0,10)  /  __vtPainScale.hide()
