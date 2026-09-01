@@ -55,15 +55,21 @@
     #vt-start-btn {
       position: fixed;
       left: 50%;
-      bottom: 20px;
+      /* Sits just under the centred welcome splash. Anchored to the middle of
+         the viewport with a FIXED offset instead of being measured against the
+         splash — the splash renders a beat later and comes and goes during
+         load/reset, and measuring it is what made this button jump around.
+         Never recalculated; layoutWelcomeStart() is deliberately a no-op. */
+      top: calc(50% + 104px);
+      bottom: auto;
       transform: translateX(-50%);
       z-index: 2147483646;
-      padding: 16px 64px;
+      padding: 18px 72px;
       font-family: sans-serif;
-      font-size: 17px;
+      font-size: 19px;
       font-weight: 600;
       color: #fff;
-      background: #2f5e5b;            /* matches the Kinny header teal */
+      background: #2f7d63;            /* the one CTA green, same as every tappable control */
       border: none;
       border-radius: 30px;
       box-shadow: 0 6px 18px rgba(47, 94, 91, 0.4);
@@ -72,7 +78,12 @@
       -webkit-tap-highlight-color: transparent;
     }
     #vt-start-btn.show { display: block; }
-    #vt-start-btn:hover  { background: #274e4b; }
+    /* The Start button sits at z-index 2147483646 so it floats over the webchat.
+       That also floated it over our confirm popups, covering a button. While a
+       popup is open it must be gone — and this has to be a CSS override, because
+       updateStartUI() re-adds .show every watchdog tick. */
+    body.vt-modal-open #vt-start-btn { display: none !important; }
+    #vt-start-btn:hover  { background: #245f4b; }
     #vt-start-btn:active { transform: translateX(-50%) scale(0.97); }
 
     /* ── Status bar visibility ───────────────────────────────
@@ -1109,7 +1120,7 @@
         var mx = parseInt(parts[1], 10); if (isNaN(mx)) mx = 10;
         console.log('[VideoTrack] Pain scale widget:', mn, '-', mx);
         scheduleHideMarker('painscale:');
-        showPainScale(mn, mx, true);          // colored green→red
+        if (markerIsCurrent('painscale:')) showPainScale(mn, mx, true);   // colored green→red
       } else if (text.startsWith('__confscale:') && text.endsWith('__')) {
         var cspec  = text.slice(12, -2).trim();         // e.g. "0-10"
         var cparts = cspec.split('-');
@@ -1117,7 +1128,7 @@
         var cmx = parseInt(cparts[1], 10); if (isNaN(cmx)) cmx = 10;
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
-        showPainScale(cmn, cmx, true, 'blue'); // confidence: light-blue → dark-blue gradient
+        if (markerIsCurrent('confscale:')) showPainScale(cmn, cmx, true, 'blue'); // confidence gradient
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
@@ -1147,7 +1158,7 @@
         console.log('[VideoTrack] Choice widget:', key, ctype, opts);
         scheduleHideMarker(key.toLowerCase() + ':');
         if (opts.length) {
-          showChoice(ctype, opts);
+          if (markerIsCurrent(key.toLowerCase() + ':')) showChoice(ctype, opts);
         } else {
           console.warn('[VideoTrack] Choice marker "' + key + '" has no options — hiding it ' +
             'but no widget will render. Fix in Studio: __' + key + ':' + ctype + ':Option1|Option2__');
@@ -1247,6 +1258,12 @@
         '.bpMessageBlocksBubble table p,.bpMessageBlocksBubble table span,' +
         '.bpMessageContainer table p,.bpMessageContainer table span{' +
           'font-size:inherit!important;line-height:inherit!important;margin:0!important;}' +
+        // Botpress draws its own small grey "scroll to newest" circle at the
+        // bottom of the message list. We already show a bigger, labelled green
+        // 👇 回到最新 button, and two competing affordances for the same job
+        // confuse an elderly reader — emon picked the green one, so the grey
+        // one goes. (Selector measured live: 32px circle, --bpGray-100.)
+        '.bpMessageListContainer .bpMessageListScrollDownButton{display:none!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -1540,19 +1557,16 @@
       if (!st) { st = document.createElement('style'); st.id = 'vt-welcome-center'; s.appendChild(st); }
       if (_welcomeCentered !== on) {
         _welcomeCentered = on;
+        // Botpress's centre splash (robot avatar + title + 請點擊"開始"…) is the
+        // homepage emon wants to keep, so it stays visible and centred. The
+        // Start button is NOT measured against it — see #vt-start-btn's CSS.
         st.textContent = on ? '.bpMessageListViewport{justify-content:center!important;}' : '';
       }
     }
-    function layoutWelcomeStart() {
-      var s = bpShadowRoot();
-      var b = startBtnEl();
-      if (!s || !b) return;
-      var mq = s.querySelector('.bpMessageListMarqueeContainer');
-      if (!mq) return;
-      var r = mq.getBoundingClientRect();
-      b.style.bottom = 'auto';
-      b.style.top = Math.round(r.bottom + 16) + 'px';   // just under the centred marquee
-    }
+    // Deliberately a no-op: the Start button stays exactly where its CSS puts
+    // it. It used to be measured against the marquee and moved, which is what
+    // made it jump. Kept as a function so existing callers need no change.
+    function layoutWelcomeStart() {}
     // A real conversation is underway once an actual (bot or user) message is on
     // screen. The welcome splash has none — and a lone "Today" date separator is
     // data-direction="system", which we deliberately ignore. This also flips back
@@ -1791,8 +1805,10 @@
           } else {
             bg = '#e9edf1'; fg = '#1f2937';    // plain neutral
           }
-          cell.style.cssText = 'flex:1 1 0;min-width:0;min-height:42px;border:none;' +
-            'border-radius:8px;color:' + fg + ';font-family:sans-serif;font-size:15px;' +
+          // Colours deliberately unchanged (emon: keep the 0-10 scales as they
+          // are) — only the digits grow, they were too small to read.
+          cell.style.cssText = 'flex:1 1 0;min-width:0;min-height:50px;border:none;' +
+            'border-radius:8px;color:' + fg + ';font-family:sans-serif;font-size:19px;' +
             'font-weight:700;line-height:1;cursor:pointer;padding:0;' +
             'box-shadow:inset 0 0 0 1px rgba(0,0,0,0.06);' +
             '-webkit-tap-highlight-color:transparent;' +
@@ -1899,17 +1915,24 @@
       // Left padding aligns the buttons with the bot message bubble's left edge:
       // the bubble is inset by the avatar (--bpSpacing-7) + row gap (--bpSpacing-2).
       // These Botpress vars resolve inside its shadow DOM (where this widget lives).
-      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
-        'padding:4px 14px 16px calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px));';
+      // On a phone that 36px left gutter costs a whole button per row, so it is
+      // trimmed. Goal: every choice visible at once, no horizontal overflow.
+      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;max-width:100%;overflow-x:hidden;' +
+        'padding:4px 12px 16px ' +
+        ((window.innerWidth || 400) < 480
+           ? '12px' : 'calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px))') + ';';
       var inner = document.createElement('div');
       // Word-cloud layout: options wrap onto as many rows as needed so every
       // choice is visible at once (no horizontal scrolling on small screens).
       inner.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
-      var OFF = 'background:#e6f2ec;color:#1f3a30;border-color:#c3ddcf;';
-      var ON  = 'background:#2f7d63;color:#fff;border-color:#2f7d63;';
-      var BASE = 'border:1px solid #c3ddcf;border-radius:12px;padding:11px 18px;' +
-                 'font-family:sans-serif;font-size:16px;font-weight:600;cursor:pointer;' +
-                 'line-height:1.2;-webkit-tap-highlight-color:transparent;' +
+      // Same native Botpress choice-button styling as the session menu.
+      var OFF = 'background:#cad6d8;color:#14292d;';
+      var ON  = 'background:#9db3b7;color:#14292d;';
+      var BASE = 'border:none;border-radius:12px;' +
+                 'padding:12px ' + ((window.innerWidth || 400) < 480 ? '14px' : '20px') + ';' +
+                 'font-family:inter,sans-serif;font-size:20px;font-weight:400;cursor:pointer;' +
+                 'line-height:20px;min-height:52px;box-sizing:border-box;' +
+                 '-webkit-tap-highlight-color:transparent;' +
                  'white-space:nowrap;flex:0 0 auto;';
       var selected = [];
       var confirmBtn = null;
@@ -1979,7 +2002,7 @@
     // ── Session-menu widget ──────────────────────────────────
     // Triggered by the bot sending two raw numbers; the FRONT-END does the
     // enable/disable logic:
-    //   __sessionmenu:current=C;finished=F__
+    //   __sessionmenu:current=C;finished=F[;placement=start|whatnext]__
     // Renders (up to) two rows — 🚀 開始新進度 and 🎒 溫習舊內容 — each a header
     // label followed by "第 n 節" buttons on the same line. Enabled buttons are
     // tappable and send just the number; disabled ones are greyed. Logic:
@@ -1987,52 +2010,141 @@
     //     (the next one you may start), the rest are shown but disabled.
     //   • 溫習舊內容: sessions 1 … finished, all enabled.
     //   A group with no sessions is omitted entirely.
+    // Marker: __sessionmenu:current=N;finished=N[;placement=start|whatnext]__
+    //
+    //   placement=start     (default, and what an older marker without the key
+    //                        means) — the original two groups, unchanged.
+    //   placement=whatnext  — the same two groups PLUS a 結束本週課程 option, for
+    //                        the menu shown after a lesson finishes.
+    //
+    // The end option sends `endvalue` (default 0) through the same sendChoice
+    // path as a session number, so Studio branches on it exactly like a session
+    // pick. Override in the marker with endvalue=… / endlabel=… if needed.
+    var MENU_END_VALUE = 0;
+    var MENU_END_LABEL = '結束本週課程';
     function parseSessionMenu(spec) {
       var p = {};
       spec.split(/[;,]/).forEach(function (kv) {
         var eq = kv.indexOf('=');
         if (eq < 0) return;
-        var k = kv.slice(0, eq).trim().toLowerCase();
-        var v = parseInt(kv.slice(eq + 1).trim(), 10);
-        if (!isNaN(v)) p[k] = v;
+        var k   = kv.slice(0, eq).trim().toLowerCase();
+        var raw = kv.slice(eq + 1).trim();
+        // Numbers stay numbers (current/finished); anything else keeps its text
+        // — the old version parseInt'd everything, which silently dropped
+        // placement=whatnext.
+        p[k] = /^-?\d+$/.test(raw) ? parseInt(raw, 10) : raw;
       });
       var current = p.current  || 0;                 // current_session (highest unlocked)
       var fin     = p.finished || 0;                 // largest_finished_session
-      var groups = [];
-      var g1 = [];
+      var place   = String(p.placement || 'start').toLowerCase();
+
+      var gNew = [];
       for (var n = fin + 1; n <= current; n++) {
-        g1.push({ num: n, on: (n === fin + 1) });    // only the immediate next session is startable
+        gNew.push({ num: n, on: (n === fin + 1) });  // only the immediate next session is startable
       }
-      if (g1.length) groups.push({ header: '🚀 開始新進度：', items: g1 });
-      var g2 = [];
+      var gOld = [];
       for (var m = 1; m <= fin; m++) {
-        g2.push({ num: m, on: true });               // every finished session is reviewable
+        gOld.push({ num: m, on: true });             // every finished session is reviewable
       }
-      if (g2.length) groups.push({ header: '🎒 溫習舊內容：', items: g2 });
+      var newGroup = gNew.length ? { header: '🚀 開始新進度：', items: gNew } : null;
+      var oldGroup = gOld.length ? { header: '🎒 溫習舊內容：', items: gOld } : null;
+
+      var groups = [];
+      if (place === 'whatnext') {
+        // Order follows what someone who JUST FINISHED a lesson most likely
+        // wants: leave → revise something → (rarely) start another lesson today.
+        // The end option is the recommended action, so it gets the visual
+        // weight: one full-width solid button, then "或者" and the pill rows.
+        var endVal   = (p.endvalue !== undefined) ? p.endvalue : MENU_END_VALUE;
+        var endLabel = (p.endlabel !== undefined) ? String(p.endlabel) : MENU_END_LABEL;
+        groups.push({ kind: 'end', header: '',
+                      items: [{ num: endVal, label: endLabel, on: true, end: true }] });
+        if (oldGroup) groups.push(oldGroup);
+        if (newGroup) groups.push(newGroup);
+      } else {
+        // placement=start (and any older marker without the key) — untouched.
+        if (newGroup) groups.push(newGroup);
+        if (oldGroup) groups.push(oldGroup);
+      }
+      console.log('[VideoTrack] Session menu placement:', place,
+                  '| groups:', groups.map(function (g) { return g.kind || g.header; }).join(' / '));
       return groups;
     }
     function buildSessionMenu(groups) {
       var wrap = document.createElement('div');
       wrap.id = 'vt-sessionmenu';
-      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;' +
-        'padding:4px 14px 16px calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px));';
-      // Buttons match the exercise (上午/下午) choice pills: 16px, rounded,
-      // light-green when tappable, solid green on tap, grey when disabled.
-      // Button text is not bold; the group title above is bold.
-      var BASE = 'border:1px solid #c3ddcf;border-radius:12px;padding:11px 18px;' +
-                 'font-family:sans-serif;font-size:16px;font-weight:400;line-height:1.2;' +
+      // On a phone that 36px left gutter costs a whole button per row, so it is
+      // trimmed. Goal: every choice visible at once, no horizontal overflow.
+      wrap.style.cssText = 'box-sizing:border-box;align-self:stretch;max-width:100%;overflow-x:hidden;' +
+        'padding:4px 12px 16px ' +
+        ((window.innerWidth || 400) < 480
+           ? '12px' : 'calc(var(--bpSpacing-7, 28px) + var(--bpSpacing-2, 8px))') + ';';
+      // Measured off a REAL Botpress choice button (the disclaimer's OK):
+      //   font-size 20px / weight 400 / line-height 20px
+      //   padding 12px 20px · radius 12px · NO border
+      //   background rgb(202,214,216) · colour rgb(20,41,45) · height 52px
+      // Our pills copy it exactly, so "tappable" looks identical whether
+      // Botpress or this page drew it. Re-measure before changing these.
+      var NARROW = (window.innerWidth || 400) < 480;
+      var BASE = 'border:none;border-radius:12px;' +
+                 'padding:12px ' + (NARROW ? '14px' : '20px') + ';' +
+                 'font-family:inter,sans-serif;font-size:20px;font-weight:400;line-height:20px;' +
+                 'min-height:52px;box-sizing:border-box;' +
                  '-webkit-tap-highlight-color:transparent;white-space:nowrap;flex:0 0 auto;';
-      var ENA = 'background:#e6f2ec;color:#1f3a30;cursor:pointer;';                 // tappable
-      var SEL = 'background:#2f7d63;color:#fff;border-color:#2f7d63;cursor:pointer;'; // on tap
-      var DIS = 'background:#f0f2f4;color:#aeb6bd;border-color:#e6eaed;cursor:not-allowed;';
+      var ENA = 'background:#cad6d8;color:#14292d;cursor:pointer;';       // tappable
+      var SEL = 'background:#9db3b7;color:#14292d;cursor:pointer;';       // pressed
+      var DIS = 'background:#eef1f2;color:#a9b3b5;cursor:not-allowed;';   // locked
+      // 結束本週課程 uses the SAME green as every other tappable pill. A neutral
+      // white version read as disabled — for this audience one colour has to mean
+      // one thing: green = you can tap this. What makes it different is its
+      // position (first) and its label, not its styling.
       groups.forEach(function (g) {
         var group = document.createElement('div');
         group.style.cssText = 'margin-bottom:16px;';
+
+        // ── the 結束本週課程 block (placement=whatnext only) ──
+        if (g.kind === 'end') {
+          var it0 = g.items[0];
+          var eRow = document.createElement('div');
+          eRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;';
+          var eb = document.createElement('button');
+          eb.type = 'button';
+          eb.textContent = it0.label;
+          eb.style.cssText = BASE + ENA;
+          (function (num) {
+            eb.addEventListener('click', function (e) {
+              e.stopPropagation();
+              if (wrap._done) return; wrap._done = true;
+              if (_menuKey) _menuAnswered[_menuKey] = true;
+              eb.style.cssText = BASE + SEL;
+              sendChoice(String(num));
+              console.log('[VideoTrack] Session menu answered:', String(num), '(end of week)');
+              setTimeout(hidePainScale, 220);
+            });
+          })(it0.num);
+          eRow.appendChild(eb);
+          group.appendChild(eRow);
+          // "或者" rule — half width so it reads as a soft break between the
+          // end option and the alternatives, not as a full section divider.
+          var sep = document.createElement('div');
+          sep.style.cssText = 'display:flex;align-items:center;gap:10px;width:50%;margin:14px 0 2px;' +
+                              'font-family:sans-serif;font-size:13px;color:#93a29b;';
+          var l1 = document.createElement('span');
+          l1.style.cssText = 'flex:1;height:1px;background:#e2e8e5;';
+          var l2 = l1.cloneNode(false);
+          var txt = document.createElement('span');
+          txt.textContent = '或者';
+          sep.appendChild(l1); sep.appendChild(txt); sep.appendChild(l2);
+          group.appendChild(sep);
+          wrap.appendChild(group);
+          return;
+        }
+
         if (g.header) {
           var h = document.createElement('div');   // title on its own line
           h.textContent = g.header;
-          h.style.cssText = 'font-family:sans-serif;font-size:16px;font-weight:700;' +
-                            'color:#1f3a30;margin-bottom:8px;';
+          h.style.cssText = 'font-family:sans-serif;font-size:18px;font-weight:700;' +
+                            'color:#14292d;margin-bottom:8px;';
           group.appendChild(h);
         }
         var btnRow = document.createElement('div');  // buttons on the next line, wrapping
@@ -2040,7 +2152,7 @@
         g.items.forEach(function (it) {
           var b = document.createElement('button');
           b.type = 'button';
-          b.textContent = '第 ' + it.num + ' 節';
+          b.textContent = it.label || ('第 ' + it.num + ' 節');
           if (it.on) {
             b.style.cssText = BASE + ENA;
             (function (num) {
@@ -2050,6 +2162,7 @@
                 if (_menuKey) _menuAnswered[_menuKey] = true;   // answered → don't let the lingering marker resurrect it
                 b.style.cssText = BASE + SEL;      // selected feedback (like the exercise widget)
                 sendChoice(String(num));           // send just the number
+                console.log('[VideoTrack] Session menu answered:', String(num));
                 setTimeout(hidePainScale, 220);
               });
             })(it.num);
@@ -2066,6 +2179,35 @@
     }
     var _menuKey = '';
     var _menuAnswered = {};
+    // A marker only describes the CURRENT step. After a reload the whole
+    // transcript is replayed, so an ancient marker would resurrect its widget —
+    // observed live: a sessionmenu marker sitting at row 2 of 46 redrew the
+    // session picker on top of a lesson already in progress, and locked the
+    // composer with 請點擊上面選項. `_menuAnswered` cannot help: it lives in
+    // memory and is empty after a refresh.
+    //
+    // Rule: only render a marker's widget if that marker is among the last few
+    // bot messages. Unknown (marker not in the DOM) → allow, so the live
+    // message-event path is unaffected.
+    function markerIsCurrent(prefix, maxBack) {
+      var s = bpShadowRoot();
+      if (!s) return true;
+      var rows = s.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+      if (!rows.length) return true;
+      var re = new RegExp(prefix, 'i');
+      for (var i = rows.length - 1; i >= 0; i--) {
+        if (re.test(rows[i].textContent || '')) {
+          var back = rows.length - 1 - i;
+          if (back > (maxBack == null ? 3 : maxBack)) {
+            console.log('[VideoTrack] stale marker ignored:', prefix, '(' + back + ' messages back)');
+            return false;
+          }
+          return true;
+        }
+      }
+      return true;
+    }
+
     function showSessionMenu(groups, key) {
       if (!groups || !groups.length) return;
       key = key || '';
@@ -2073,6 +2215,7 @@
       // and the observer re-fires), but once the user taps a session it stays
       // hidden — the click handler records the key in _menuAnswered.
       if (key && _menuAnswered[key]) return;
+      if (!markerIsCurrent('sessionmenu:')) return;   // replayed history, not the live step
       if (_painScaleEl && _menuKey && _menuKey === key) return;   // already showing this exact menu
       hidePainScale();
       _menuKey = key;
@@ -2129,6 +2272,7 @@
     var _ttsWatch     = null;    // watchdog interval for engines that skip onend
     var _ttsIdleTicks = 0;
     var _ttsMsgDone   = false;   // guards against onend + watchdog both firing
+    var _ttsQuietLogged = false; // log the disarmed-skip once per period, not per row
 
     // Android's speech engine differs enough from desktop Chrome to need its
     // own handling in two places (chunk size and the keep-alive nudge).
@@ -2941,9 +3085,26 @@
         if (txt !== st.text) { st.text = txt; st.at = Date.now(); continue; }  // still streaming
         if (Date.now() - st.at < TTS_SETTLE_MS) continue;                      // not settled yet
 
+        // A popup is up: say nothing, and do NOT mark the row done — the user
+        // is being asked a question and speech over it is confusing. Leaving
+        // the row undecided means it gets read normally once the popup closes,
+        // instead of being silently swallowed.
+        if (popupOpen()) continue;
+
         st.done = true;                              // decided once, never revisited
-        if (!_ttsArmed) continue;                    // history replayed on load — mark, don't read
+        if (!_ttsArmed) {
+          // Disarmed: replayed history at boot, or the page went to the
+          // background (see ttsDisarm). Mark it read, stay silent.
+          if (!_ttsQuietLogged) { _ttsQuietLogged = true; console.log('[VideoTrack][TTS] disarmed — marking messages read without speaking'); }
+          continue;
+        }
         if (!_ttsOn)    continue;                    // muted — mark, don't read
+        // NOTE: there is deliberately NO `if (document.hidden)` check here.
+        // Chrome reports a fully occluded desktop window as hidden, so a
+        // per-message check silenced read-aloud whenever another window sat on
+        // top — and because the row is marked done, that message was lost for
+        // good. Backgrounding is handled ONCE, by ttsDisarm() on the
+        // visibilitychange / freeze / pageshow events, which is enough.
 
         // Arrived while a clip is playing: mark it read and let it go. Queuing
         // it would mean a burst of catch-up speech the moment the clip ends.
@@ -3200,6 +3361,581 @@
       window.botpress.on('webchat:messageSent', function () { ttsStop(); markConversationStarted(); beginPostSendLock(); });
     });
 
+    // =========================================================
+    // IDLE POPUP — "你還在嗎？" after N minutes, + restart-button confirm
+    // =========================================================
+    // Elderly participants often wander off mid-lesson and come back to a
+    // transcript they no longer recognise, then either sit there or type
+    // something random that restarts the whole flow. This asks them plainly,
+    // and points out that scrolling up is how you re-read the context.
+    //
+    // "Activity" is deliberately generous — a video that is 4½ minutes long
+    // must NOT count as idle time:
+    //   • a new message either way (bot or user)
+    //   • any video/audio actually playing
+    //   • read-aloud speaking
+    // Timer: IDLE_POPUP_MIN minutes, override with ?idle=<minutes> for testing.
+    // ---------------------------------------------------------
+    // NOTE: these are IDLE_POPUP_*, NOT IDLE_MS. The composer-lock module
+    // above already owns an IDLE_MS constant (1500) in this same IIFE scope, and
+    // redeclaring it here silently made botIsIdle() wait five minutes before
+    // unlocking the text box — the login step became untypable.
+    var IDLE_POPUP_MIN = parseFloat(new URLSearchParams(window.location.search).get('idle') || '5');
+    var IDLE_POPUP_MS  = Math.max(0.2, isNaN(IDLE_POPUP_MIN) ? 5 : IDLE_POPUP_MIN) * 60000;
+    var _idleAt      = Date.now();
+    var _idleSig     = '';
+    var _idlePopupEl = null;
+
+    function idleSignature() {
+      var sr = bpShadowRoot();
+      if (!sr) return '';
+      var inc = sr.querySelectorAll('.bpMessageContainer[data-direction="incoming"]').length;
+      var out = sr.querySelectorAll('.bpMessageContainer[data-direction="outgoing"]').length;
+      // Include the last bubble's length so text still arriving counts as
+      // activity, not idleness.
+      var all = sr.querySelectorAll('.bpMessageContainer');
+      var last = all.length ? all[all.length - 1] : null;
+      return inc + '/' + out + '/' + ((last && last.textContent) || '').length;
+    }
+    function idleMediaBusy() {
+      // The landscape overlay is open: never interrupt it, even if the clip is
+      // paused mid-way. A modal over a fullscreen video is the worst case.
+      try { if (_vfs) return true; } catch (e) {}
+      // Search the DOCUMENT as well as the shadow root. openVideoLandscape()
+      // MOVES the <video> out of the shadow root into document.body for
+      // fullscreen — a shadow-root-only scan went blind exactly while a clip
+      // was playing, and the 5-minute timer kept counting underneath it.
+      var lists = [];
+      try { lists.push(document.querySelectorAll('video, audio')); } catch (e) {}
+      var sr = bpShadowRoot();
+      if (sr) { try { lists.push(sr.querySelectorAll('video, audio')); } catch (e) {} }
+      for (var l = 0; l < lists.length; l++) {
+        var els = lists[l];
+        for (var i = 0; i < els.length; i++) {
+          if (!els[i].paused && !els[i].ended) return true;
+        }
+      }
+      return false;
+    }
+    function idleTtsBusy() {
+      try { return !!_ttsBusy; } catch (e) { return false; }
+    }
+    function idleNudge() { _idleAt = Date.now(); }
+
+    // Ask the DOM, not the variable. If the card is ever detached by anything
+    // other than hideIdlePopup(), a truthy-but-stale reference would block the
+    // restart guard AND every future popup, permanently.
+    function popupOpen() {
+      if (_idlePopupEl && !_idlePopupEl.isConnected) {
+        _idlePopupEl = null;
+        document.body.classList.remove('vt-modal-open');
+      }
+      return !!_idlePopupEl;
+    }
+    function hideIdlePopup() {
+      if (_idlePopupEl) { try { _idlePopupEl.remove(); } catch (e) {} _idlePopupEl = null; }
+      document.body.classList.remove('vt-modal-open');
+      idleNudge();
+    }
+    // Shared two-choice popup. Both callers offer the SAME pair of actions —
+    // stay in this conversation, or start a fresh one — only the wording
+    // differs. Copy is written Chinese (書面語), no emoji.
+    // ── "You can scroll up to re-read" hint + 回到最新 button ──
+    // Only shown after the user taps 繼續 on the 你還在嗎？ popup — that is the
+    // one flow where they have been away and may have lost the thread. It is
+    // NOT shown in the restart flows: there the transcript is about to be
+    // cleared, so telling them to scroll up would be nonsense.
+    //
+    // The companion 回到最新 button is what makes scrolling up safe: an elderly
+    // user who scrolls back to re-read often cannot find their way to the live
+    // question again. It appears only while they are actually scrolled away
+    // from the bottom.
+    var _hintEl = null, _hintTimer = null;
+    var KX_FONT2 = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
+
+    function hideScrollHint() {
+      if (_hintTimer) { clearTimeout(_hintTimer); _hintTimer = null; }
+      if (_hintEl) { try { _hintEl.remove(); } catch (e) {} _hintEl = null; }
+    }
+    function showScrollHint() {
+      hideScrollHint();
+      var bar = document.createElement('div');
+      bar.id = 'vt-scroll-hint';
+      bar.style.cssText = 'position:fixed;left:50%;top:72px;transform:translateX(-50%);z-index:2147483000;' +
+        'display:flex;align-items:center;gap:10px;max-width:92vw;box-sizing:border-box;' +
+        'background:#fff;border:2px solid #2f7d63;border-radius:16px;padding:13px 14px 13px 16px;' +
+        'box-shadow:0 10px 26px rgba(0,0,0,.18);font-family:' + KX_FONT2 + ';font-size:17px;' +
+        'line-height:1.5;color:#1a2420;';
+      var txt = document.createElement('span');
+      txt.textContent = '☝️ 想看之前的內容，可以向上捲動';
+      bar.appendChild(txt);
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.textContent = '✕';
+      x.setAttribute('aria-label', '關閉');
+      x.style.cssText = 'flex:0 0 auto;width:34px;height:34px;border:none;border-radius:50%;' +
+        'background:#eef3f0;color:#3d4a45;font-size:17px;line-height:1;cursor:pointer;';
+      x.addEventListener('click', hideScrollHint);
+      bar.appendChild(x);
+      document.body.appendChild(bar);
+      _hintEl = bar;
+      // Long enough to read without hurrying, short enough not to linger.
+      _hintTimer = setTimeout(hideScrollHint, 14000);
+      console.log('[VideoTrack] scroll hint shown');
+    }
+
+    // ── 回到最新 ─────────────────────────────────────────────
+    var _backBtn = null;
+    function backBtnEl() {
+      if (_backBtn && _backBtn.isConnected) return _backBtn;
+      var b = document.createElement('button');
+      b.id = 'vt-back-latest';
+      b.type = 'button';
+      b.textContent = '👇 回到最新';
+      // Centred, where Botpress's own (now hidden) grey circle used to sit —
+      // a middle-of-screen target is easier to find and hit than a corner one.
+      b.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);' +
+        'bottom:104px;z-index:2147483000;display:none;max-width:92vw;' +
+        'padding:13px 18px;border-radius:99px;border:2px solid #2f7d63;background:#2f7d63;color:#fff;' +
+        'font-family:' + KX_FONT2 + ';font-size:17px;font-weight:700;cursor:pointer;' +
+        'box-shadow:0 8px 20px rgba(0,0,0,.22);-webkit-tap-highlight-color:transparent;';
+      b.addEventListener('click', function () {
+        try { scrollChatToBottom(); } catch (e) {}
+        setTimeout(function () { try { scrollChatToBottom(); } catch (e) {} }, 300);
+        hideScrollHint();
+      });
+      document.body.appendChild(b);
+      _backBtn = b;
+      return b;
+    }
+    function backToLatestTick() {
+      // Safety net for "any popup silences read-aloud": showChoicePopup already
+      // calls ttsStop(), but if a popup ever appears by some other path this
+      // catches it within one tick rather than letting speech run under it.
+      if (popupOpen() && (_ttsBusy || _ttsMsgQueue.length)) {
+        console.log('[VideoTrack][TTS] popup is open — stopping read-aloud');
+        try { ttsStop(); } catch (e) {}
+      }
+      var sr = bpShadowRoot();
+      if (!sr || !hasRealMessages()) { if (_backBtn) _backBtn.style.display = 'none'; return; }
+      var sc = null;
+      try { sc = bpScrollEl(sr); } catch (e) {}
+      if (!sc) { if (_backBtn) _backBtn.style.display = 'none'; return; }
+      var away = sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+      // Hidden while a modal is up, and while they are already at the bottom.
+      var show = away > 220 && !popupOpen();
+      var b = backBtnEl();
+      var want = show ? 'block' : 'none';
+      if (b.style.display !== want) b.style.display = want;   // write only on change
+    }
+
+    // Redesigned 2026-08-16 for elderly readability: as few words as possible,
+    // and the two choices must be obviously different at a glance — a big
+    // emoji, a bold verb, and one green (go on) vs one outlined (start over).
+    // Long explanations are demoted to a single small line under the buttons.
+    function showChoicePopup(o) {
+      if (popupOpen()) return;
+      var FONT = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
+      var back = document.createElement('div');
+      back.id = 'vt-idle-popup';
+      back.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(17,28,26,.55);' +
+        'display:flex;align-items:center;justify-content:center;padding:20px;font-family:' + FONT + ';';
+      var card = document.createElement('div');
+      card.style.cssText = 'background:#fff;border-radius:22px;width:100%;max-width:400px;padding:28px 22px 20px;' +
+        'box-shadow:0 20px 50px rgba(0,0,0,.28);color:#1a2420;max-height:88vh;overflow-y:auto;text-align:center;';
+
+      if (o.emoji) {
+        var ic = document.createElement('div');
+        ic.style.cssText = 'font-size:52px;line-height:1;margin:0 0 12px;';
+        ic.textContent = o.emoji;
+        card.appendChild(ic);
+      }
+
+      var h = document.createElement('div');
+      h.style.cssText = 'font-size:27px;font-weight:750;line-height:1.3;margin:0 0 18px;';
+      h.textContent = o.title;
+      card.appendChild(h);
+
+      // Primary: solid, taller, the obvious "carry on" choice.
+      var BTN = 'display:flex;align-items:center;justify-content:center;gap:10px;width:100%;' +
+        'box-sizing:border-box;border-radius:16px;font-weight:700;cursor:pointer;font-family:' + FONT + ';' +
+        '-webkit-tap-highlight-color:transparent;border:2px solid #2f7d63;';
+      var b1 = document.createElement('button');
+      b1.type = 'button';
+      b1.style.cssText = BTN + 'background:#2f7d63;color:#fff;padding:20px 14px;font-size:21px;margin:0;';
+      b1.textContent = (o.primaryIcon ? o.primaryIcon + '  ' : '') + o.primary;
+      b1.addEventListener('click', function () {
+        console.log('[VideoTrack] Popup → stay (' + o.tag + ')');
+        if (typeof o.onPrimary === 'function') { o.onPrimary(); return; }
+        hideIdlePopup();
+        try { scrollChatToBottom(); } catch (e) {}
+      });
+      card.appendChild(b1);
+
+      // Secondary: outlined and shorter, so the two never look interchangeable.
+      var b2 = document.createElement('button');
+      b2.type = 'button';
+      b2.style.cssText = BTN + 'background:#fff;color:#2f7d63;padding:15px 14px;font-size:18px;margin:14px 0 0;';
+      b2.textContent = (o.secondaryIcon ? o.secondaryIcon + '  ' : '') + o.secondary;
+      b2.addEventListener('click', function () {
+        console.log('[VideoTrack] Popup → secondary (' + o.tag + ')');
+        if (typeof o.onSecondary === 'function') { o.onSecondary(); return; }
+        restartConversation();
+      });
+      card.appendChild(b2);
+
+      if (o.note) {
+        var note = document.createElement('div');
+        note.style.cssText = 'font-size:14px;color:#8a938e;line-height:1.55;margin:14px 4px 0;';
+        note.textContent = o.note;
+        card.appendChild(note);
+      }
+
+      back.appendChild(card);
+      document.body.appendChild(back);
+      _idlePopupEl = back;
+      document.body.classList.add('vt-modal-open');   // hides #vt-start-btn
+      // Silence read-aloud the instant any popup appears: mid-sentence speech
+      // over a question the user has to answer is disorienting. ttsStop() kills
+      // what is speaking AND drains the queue; ttsScanDom's popupOpen() guard
+      // keeps anything new from starting while the popup is up.
+      try { ttsStop(); } catch (e) {}
+    }
+
+    function showIdlePopup() {
+      showChoicePopup({
+        tag: 'idle',
+        emoji: '👋',
+        title: '你還在嗎？',
+        primaryIcon: '💬', primary: '繼續對話',
+        // Only this flow offers the scroll hint — the user has been away and
+        // may have lost the thread. Shown AFTER they choose to carry on, so the
+        // popup itself stays short.
+        onPrimary: function () {
+          hideIdlePopup();
+          try { scrollChatToBottom(); } catch (e) {}
+          showScrollHint();
+        },
+        secondaryIcon: '🔄', secondary: '重新開始',
+        note: '重新開始要再次輸入帳號。'
+      });
+    }
+
+    // Botpress's own header restart control wipes the transcript with no
+    // confirmation and drops the user back at the login prompt. For this
+    // audience that is a trap, so we intercept it and ask first.
+    function showRestartConfirmPopup() {
+      showChoicePopup({
+        tag: 'restart-button',
+        emoji: '🔄',
+        title: '要重新開始嗎？',
+        primaryIcon: '💬', primary: '繼續現在的對話',
+        secondaryIcon: '🔄', secondary: '重新開始',
+        note: '重新開始會清除對話紀錄，並要再次輸入帳號。'
+      });
+    }
+
+    // Wipe the Botpress webchat state so the next load is a genuinely new
+    // conversation. Uses the same bp-webchat- prefix the 7-day reset relies on
+    // (see the storage block at the top of this file), and re-stamps
+    // vt_session_started so the window restarts from this new conversation.
+    function restartConversation() {
+      var removed = [];
+      try {
+        for (var i = 0; i < localStorage.length; i++) {
+          var k = localStorage.key(i);
+          if (k && (k.indexOf('bp-webchat-') === 0 || k.indexOf('bp/') === 0 ||
+                    k.indexOf('botpress') === 0 || k.indexOf('8549d670') !== -1)) removed.push(k);
+        }
+        removed.forEach(function (k) { localStorage.removeItem(k); });
+        localStorage.setItem('vt_session_started', String(Date.now()));
+      } catch (e) { console.warn('[VideoTrack] restart: storage error', e); }
+      console.log('[VideoTrack] Restarting — cleared ' + removed.length + ' key(s)');
+      setTimeout(function () { location.reload(); }, 120);
+    }
+
+    // ── Intercept Botpress's own restart control ─────────────
+    // It sits in the header (the circular-arrow icon) and wipes the transcript
+    // instantly. We swallow the click in the CAPTURE phase — before Botpress's
+    // own handler runs — and ask for confirmation instead. Matching is on the
+    // element's aria-label/title so the neighbouring sound toggle is never
+    // caught by accident.
+    var _restartGuardWired = false;
+    // The real control, verified live in the shadow root:
+    //   <svg aria-label="Restart Conversation Button"
+    //        class="lucide lucide-rotate-ccw bpHeaderContentActionsIcons">
+    //
+    // Match on the LABEL, never on className. Botpress stamps `bpReset` on
+    // almost every element it renders, so a regex containing "reset" that also
+    // looked at classes matched the whole chat — every tap anywhere reopened
+    // the confirm popup and the user could never get back to the conversation.
+    // The only class we trust is the specific icon name.
+    var RESTART_LABEL_RE = /restart|reset\s*conversation|new\s*conversation|重新開始|重設/i;
+    var RESTART_ICON_RE  = /lucide-rotate-ccw/;
+    function isRestartControl(el, sr) {
+      for (var n = el; n && n !== sr; n = n.parentNode) {
+        if (!n || n.nodeType !== 1 || !n.getAttribute) continue;
+        var label = [n.getAttribute('aria-label'), n.getAttribute('title'),
+                     n.getAttribute('data-testid')].filter(Boolean).join(' ');
+        if (label && RESTART_LABEL_RE.test(label)) return n;
+        // className on an <svg> is an SVGAnimatedString, hence baseVal.
+        var cls = n.className;
+        if (cls && typeof cls === 'object') cls = cls.baseVal || '';
+        if (cls && RESTART_ICON_RE.test(cls)) return n;
+      }
+      return null;
+    }
+    function wireRestartGuard() {
+      if (_restartGuardWired) return;
+      var sr = bpShadowRoot();
+      if (!sr) return;
+      _restartGuardWired = true;
+      // NOTE: click only. An earlier version also swallowed `pointerdown`,
+      // which left Botpress's reset half-executed — the transcript cleared but
+      // the new conversation never got created, so the webchat sat on its
+      // loading dots forever. Blocking the click alone is enough for a React
+      // onClick handler and does not disturb the press sequence.
+      // One-off diagnostic: if the guard ever stops catching the control, this
+      // line in the console tells us what the header actually exposes.
+      try {
+        var seen = [].slice.call(sr.querySelectorAll('button, [role="button"], svg'))
+          .map(function (n) {
+            var c = n.className; if (c && typeof c === 'object') c = c.baseVal || '';
+            return [(n.getAttribute('aria-label') || ''), (n.getAttribute('title') || ''), c]
+                   .filter(Boolean).join('|');
+          }).filter(Boolean);
+        console.log('[VideoTrack] header controls seen:', seen.slice(0, 25));
+      } catch (e) {}
+      sr.addEventListener('click', function (e) {
+        if (popupOpen()) return;
+        var hit = isRestartControl(e.target, sr);
+        if (!hit) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+        console.log('[VideoTrack] Restart control intercepted —',
+                    hit.getAttribute('aria-label') || hit.getAttribute('title') || hit.id);
+        showRestartConfirmPopup();
+      }, true);   // capture — runs before Botpress's own handler
+      console.log('[VideoTrack] Restart-button guard wired');
+    }
+
+    // ── Watchdog: keep the Start button / composer state alive ───
+    // The boot intervals in the load handler stop after ~10s. If Botpress
+    // resets the conversation after that (its own restart control, or a failed
+    // reconnect), the transcript is wiped and — worse — the webchat can render
+    // into a NEW shadow root, leaving our MutationObserver watching a detached
+    // node. Nothing re-evaluates, so the page sits with no Start button and a
+    // locked composer: stuck, with no way forward. This runs forever, notices a
+    // swapped shadow root, and re-wires everything.
+    var _lastShadowRoot = null;
+    function watchdogTick() {
+      var sr = bpShadowRoot();
+      if (!sr) return;
+      if (sr !== _lastShadowRoot) {
+        var first = _lastShadowRoot === null;
+        _lastShadowRoot = sr;
+        if (!first) {
+          console.log('[VideoTrack] Shadow root replaced — re-wiring observers');
+          // Only silence read-aloud if this swap is a RESTORE (page was hidden
+          // recently). Botpress also swaps the root during a normal start /
+          // restart while the user is watching — disarming there swallowed the
+          // opening messages and read-aloud appeared to be broken.
+          try {
+            if (document.hidden || (Date.now() - _lastHiddenAt) < 15000) {
+              ttsDisarm('shadow root replaced after background'); ttsRearm(2500);
+            } else {
+              console.log('[VideoTrack][TTS] swap while visible — read-aloud left armed');
+            }
+          } catch (e) {}
+          _restartGuardWired = false;
+          try { _uxWired = false; } catch (e) {}
+          try { observeRoot(document.getElementById('bp-embedded') || document.body); } catch (e) {}
+          try { scanAll(); } catch (e) {}
+          try { enhanceMobileUX(); } catch (e) {}
+        }
+      }
+      // Cheap (DOM queries only) — this is what un-sticks the welcome layout.
+      try { refreshComposerLock(); } catch (e) {}
+    }
+
+    // ── Self-healing: webchat stuck on its loading dots ──────
+    // Symptom seen live: after a Botpress reset the webchat renders neither the
+    // welcome splash nor any message — just its loader — and never recovers,
+    // usually because localStorage still points at a conversation the server no
+    // longer has. Left alone the participant is simply stranded.
+    //
+    // Healthy = at least one message row, OR the welcome marquee is on screen.
+    // Anything else for HEAL_AFTER_MS of CONTINUOUS unhealthiness means stuck.
+    //
+    // ⚠️ This used to latch: the first healthy tick set `_healSettled = true`
+    // and the check never ran again. That made it useless for the failure emon
+    // actually hit — the page comes up fine, THEN Botpress swaps its shadow
+    // root and renders nothing but its loading dots. By then the latch was set,
+    // so nothing healed and no popup ever appeared: stuck forever with the
+    // spinner and the 開始 button. The clock now runs from the last healthy
+    // moment, so a page that breaks LATER is still caught.
+    //
+    // Re-arming brings back the loop risk the latch was there to prevent, so
+    // the reloads are capped instead — at most HEAL_MAX_TRIES per browser tab,
+    // ever, never cleared by a healthy tick. After that we stop guessing and
+    // tell the user plainly.
+    var HEAL_AFTER_MS  = 20000;
+    var HEAL_MAX_TRIES = 2;
+    var _pageLoadAt    = Date.now();
+    var _healthyAt     = 0;      // last tick the webchat looked alive
+    var _healPopupShown = false;
+
+    // Read the per-tab heal counter, optionally incrementing it. Storage we
+    // cannot read or write back is reported as "out of tries" — an auto-reload
+    // we cannot count is a reload loop, which is worse than showing a button.
+    function healTries(add) {
+      var n = 0;
+      try {
+        n = parseInt(sessionStorage.getItem('vt_heal_count') || '0', 10) || 0;
+        if (add) {
+          sessionStorage.setItem('vt_heal_count', String(n + add));
+          if (sessionStorage.getItem('vt_heal_count') !== String(n + add)) return HEAL_MAX_TRIES;
+        }
+      } catch (e) { return HEAL_MAX_TRIES; }
+      return n;
+    }
+
+    function healthCheck() {
+      // NOTE: deliberately NO `if (!sr) return`. bpShadowRoot() only resolves
+      // once .bpComposerInput exists, so when the webchat fails to mount there
+      // is no shadow root at all — an early return here made the recovery
+      // depend on the very thing that was broken, and it never ran.
+      var sr = bpShadowRoot();
+      var healthy = false;
+      if (sr) {
+        healthy = sr.querySelectorAll('.bpMessageContainer').length > 0 ||
+                  !!sr.querySelector('[class*="bpMessageListMarquee"]');
+      }
+      if (healthy) { _healthyAt = Date.now(); return; }
+      if (popupOpen()) return;              // already asking the user something
+      // Measure from the last healthy moment, or from page load if it has
+      // never been healthy at all.
+      if (Date.now() - (_healthyAt || _pageLoadAt) < HEAL_AFTER_MS) return;
+      _healthyAt = Date.now();              // act once per stuck episode
+      if (healTries(0) < HEAL_MAX_TRIES) {
+        var n = healTries(1) + 1;
+        console.warn('[VideoTrack] Webchat showed nothing for ' + (HEAL_AFTER_MS / 1000) +
+                     's — clearing storage and reloading (attempt ' + n + '/' + HEAL_MAX_TRIES + ')');
+        restartConversation();
+      } else if (!_healPopupShown) {
+        _healPopupShown = true;
+        console.error('[VideoTrack] Still stuck after ' + HEAL_MAX_TRIES + ' heal attempts — asking the user');
+        showChoicePopup({
+          tag: 'load-failed',
+          emoji: '📶',
+          title: '載入不到對話',
+          primaryIcon: '🔄', primary: '再試一次',
+          onPrimary: function () { location.reload(); },
+          secondaryIcon: '🆕', secondary: '重新開始',
+          note: '可能是網絡不穩定，請先檢查連線。'
+        });
+      }
+    }
+
+    // ── Bad-account loop safety net ──────────────────────────
+    // Studio's `ID Not Match` node loops straight back to `greeting`, and
+    // because user.conversation_userid is still filled the capture there does
+    // not wait for new input — so a wrong account produces
+    // 帳號錯誤 → 你好！… → 帳號錯誤 → … forever, until the node-repetition limit
+    // trips. Nothing on this page can stop a server-side loop, but we can stop
+    // the participant from watching it scroll. The real fix is in Studio:
+    // clear the variable in `ID Not Match` before transitioning back.
+    var BAD_ID_LIMIT = 3;
+    var _badIdShown  = false;
+    function badAccountCheck() {
+      if (_badIdShown || popupOpen()) return;
+      var sr = bpShadowRoot(); if (!sr) return;
+      var rows = sr.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+      var hits = 0;
+      for (var i = 0; i < rows.length; i++) {
+        if (/帳號錯誤/.test(rows[i].textContent || '')) hits++;
+      }
+      if (hits < BAD_ID_LIMIT) return;
+      _badIdShown = true;
+      console.warn('[VideoTrack] 帳號錯誤 seen ' + hits + 'x — bad-account loop, offering a way out');
+      showChoicePopup({
+        tag: 'bad-account',
+        emoji: '⚠️',
+        title: '帳號不正確',
+        primaryIcon: '🔄', primary: '再輸入一次',
+        onPrimary: function () { restartConversation(); },
+        secondaryIcon: '✖️', secondary: '暫時不用',
+        onSecondary: function () { hideIdlePopup(); },
+        note: '請向研究員確認你的帳號。'
+      });
+    }
+
+    function idleTick() {
+      wireRestartGuard();
+      watchdogTick();
+      healthCheck();
+      badAccountCheck();
+      try { backToLatestTick(); } catch (e) {}
+      if (!bpShadowRoot()) { idleNudge(); return; }
+      if (!hasRealMessages()) { idleNudge(); return; }   // welcome screen — nothing to be idle in
+      var sig = idleSignature();
+      if (sig !== _idleSig) { _idleSig = sig; idleNudge(); return; }   // a message arrived or was sent
+      if (idleMediaBusy() || idleTtsBusy()) { idleNudge(); return; }   // watching / listening counts
+      if (popupOpen()) return;
+      if (Date.now() - _idleAt >= IDLE_POPUP_MS) {
+        console.log('[VideoTrack] Idle for ' + Math.round((Date.now() - _idleAt) / 1000) + 's — showing popup');
+        showIdlePopup();
+      }
+    }
+    setInterval(idleTick, 1000);
+
+    // ── Never talk by itself after a lock / background ───────
+    // Locking the phone and unlocking it made Kinny read the whole transcript
+    // aloud. Two things cause it, and both are handled by disarming:
+    //   1. messages that arrived while the screen was off would burst out on
+    //      return, and
+    //   2. the webchat re-renders on resume, so EVERY message row is a brand
+    //      new DOM node — with nothing in _ttsRowState they all look like new
+    //      messages, and read-aloud starts from the top.
+    // Disarmed means rows are still marked as seen, just never spoken. We
+    // re-arm a moment after the page is visible again, exactly like boot.
+    var _ttsArmTimer = null;
+    var _lastHiddenAt = 0;   // when the page was last backgrounded
+    function ttsDisarm(why) {
+      if (_ttsArmTimer) { clearTimeout(_ttsArmTimer); _ttsArmTimer = null; }
+      _ttsQuietLogged = false;
+      _ttsArmed = false;
+      try { ttsStop(); } catch (e) {}
+      console.log('[VideoTrack][TTS] disarmed —', why);
+    }
+    function ttsRearm(delay) {
+      if (_ttsArmTimer) clearTimeout(_ttsArmTimer);
+      _ttsArmTimer = setTimeout(function () {
+        _ttsArmTimer = null;
+        _ttsArmed = true;
+        _ttsQuietLogged = false;
+        console.log('[VideoTrack][TTS] re-armed after restore');
+      }, delay || 2000);
+    }
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        _lastHiddenAt = Date.now();
+        ttsDisarm('page hidden');
+      } else {
+        // Coming back is not "activity" for the idle popup, but a tab hidden
+        // for hours must not fire it the instant it returns.
+        idleNudge();
+        ttsRearm(2000);
+      }
+    });
+    // bfcache restore and mobile tab-freeze both land here rather than on
+    // visibilitychange in some browsers.
+    window.addEventListener('pageshow', function (e) { if (e.persisted) { ttsDisarm('bfcache restore'); ttsRearm(2000); } });
+    window.addEventListener('freeze', function () { ttsDisarm('frozen'); });
+    window.addEventListener('resume', function () { ttsRearm(2000); });
+
     // ── Debug mode: show status bar when ?debug in URL ───────
     if (new URLSearchParams(window.location.search).has('debug')) {
       document.getElementById('vt-status-bar').style.display = 'flex';
@@ -3215,6 +3951,37 @@
       // Test the composer lock: __vtComposer.unlock() / __vtComposer.lock()
       window.__vtComposer = { lock: function(){ setComposerEnabled(false); },
                               unlock: function(){ setComposerEnabled(true); } };
+      // Test the idle popup: __vtIdle.show() / .hide()  (?idle=<minutes> to shorten)
+      window.__vtIdle = { show: showIdlePopup, confirm: showRestartConfirmPopup,
+                          hide: hideIdlePopup, minutes: IDLE_POPUP_MIN,
+                          restart: restartConversation,
+                          hint: showScrollHint, hideHint: hideScrollHint,
+                          // why the idle timer is or isn't counting right now
+                          why: function () {
+                            return { mediaBusy: idleMediaBusy(), ttsBusy: idleTtsBusy(),
+                                     popupOpen: popupOpen(), hidden: document.hidden,
+                                     idleSeconds: Math.round((Date.now() - _idleAt) / 1000),
+                                     firesAtSeconds: Math.round(IDLE_POPUP_MS / 1000) };
+                          },
+                          // list what the guard would match, to verify the selector
+                          controls: function () {
+                            var sr = bpShadowRoot(); if (!sr) return [];
+                            return [].slice.call(sr.querySelectorAll('[aria-label],[title]'))
+                              .map(function (n) { return (n.getAttribute('aria-label') || n.getAttribute('title')); });
+                          } };
+      // Why is (or isn't) the self-heal firing?  __vtHeal.why()
+      window.__vtHeal = {
+        why: function () {
+          var sr = bpShadowRoot();
+          return { hasShadowRoot: !!sr,
+                   msgRows: sr ? sr.querySelectorAll('.bpMessageContainer').length : 0,
+                   marquee: sr ? !!sr.querySelector('[class*="bpMessageListMarquee"]') : false,
+                   unhealthySeconds: Math.round((Date.now() - (_healthyAt || _pageLoadAt)) / 1000),
+                   firesAtSeconds: HEAL_AFTER_MS / 1000,
+                   triesUsed: healTries(0), maxTries: HEAL_MAX_TRIES };
+        },
+        now: healthCheck
+      };
       // Test the session menu: __vtMenu.show('current=3;finished=2')
       window.__vtMenu = { show: function(spec){ showSessionMenu(parseSessionMenu(spec), spec.replace(/\s+/g,'')); },
                           hide: hidePainScale };
