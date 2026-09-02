@@ -1162,12 +1162,14 @@
         // never got past sendChoice (the button was not flagged as the end
         // item, or was not drawn by us at all). The marker does not care who
         // sent the 0.
-        console.log('[VideoTrack] Lesson-end marker — returning to the home page');
+        // Fallback route. The 結束 button is the primary trigger, but twice the
+        // participant tapped it, the 0 went out and nothing happened — the 0
+        // bubble stayed on screen, which proves the handler never reached the
+        // end branch (the button was not flagged as the end item, or was not
+        // drawn by us). Studio sends this marker in response to the 0, so it
+        // catches those cases regardless of who drew the button.
         scheduleHideMarker('lessonend');
-        hideOutgoingBubble('0');
-        // No long wait needed: the marker itself is Botpress's acknowledgement
-        // that it received the choice.
-        setTimeout(restartConversation, 600);
+        endLessonReturnHome('__lessonend__ marker');
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
@@ -1624,6 +1626,39 @@
     function hideWeekEndScreen() {
       if (_weekEndEl) { try { _weekEndEl.remove(); } catch (e) {} _weekEndEl = null; }
     }
+    // ── End of lesson → back to the home page ────────────────
+    // Spec (emon, 2026-09-02): tapping 結束 does two things, and they are
+    // INDEPENDENT — (1) the 0 goes to Botpress, (2) the participant lands on the
+    // home page. (2) must feel immediate, so it does not wait for (1). The 0 was
+    // already handed to Botpress by sendChoice before we get here; we paint a
+    // plain "returning" screen at once so the session visibly ends, and only
+    // then reload — the reload is what produces the real home page, and by the
+    // time it runs the user has already seen the chat go away.
+    var _returningHome = false;
+    function showReturningHome() {
+      if (document.getElementById('vt-returning')) return;
+      var FONT = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
+      var back = document.createElement('div');
+      back.id = 'vt-returning';
+      back.style.cssText = 'position:fixed;inset:0;z-index:2147483300;background:#fff;' +
+        'display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;' +
+        'font-family:' + FONT + ';color:#1a2420;font-size:22px;font-weight:700;';
+      back.textContent = '正在返回主頁…';
+      document.body.appendChild(back);
+      try { hideStartButton(); } catch (e) {}
+      try { ttsStop(); } catch (e) {}
+      try { ttsDisarm('returning home'); } catch (e) {}
+    }
+    function endLessonReturnHome(why) {
+      if (_returningHome) return;          // whichever route fires first wins
+      _returningHome = true;
+      console.log('[VideoTrack] End of lesson — returning to the home page (' + why + ')');
+      markWeekEnded(false);                // no completion screen in this design
+      hideOutgoingBubble('0');
+      showReturningHome();                 // instant feedback, before any waiting
+      setTimeout(restartConversation, 1200);   // give the 0 time to land, then reload
+    }
+
     // Hide one of the participant's OWN message bubbles by its exact text.
     // Used for the "0" that 結束本週課程 sends: Botpress needs it, the
     // participant should never see a bare number in their transcript. The
@@ -2344,17 +2379,9 @@
                 // side the lesson is over the moment they tap it: hide their own
                 // "0" bubble, show the completion screen straight away, and let
                 // whatever Studio replies with land behind it unseen.
-                if (isEnd) {
-                  // emon, 2026-09-02: 結束本週課程 goes STRAIGHT back to the
-                  // Kinny home page — no completion screen in between.
-                  // The 0 still has to reach Botpress, so hide the bubble and
-                  // give the send ~1.2s before the reload tears the page down;
-                  // reloading immediately can abort the request.
-                  markWeekEnded(false);
-                  hideOutgoingBubble(String(num));
-                  console.log('[VideoTrack] 結束本週課程 — sent 0, returning to the home page');
-                  setTimeout(restartConversation, 1200);
-                }
+                // sendChoice above already handed the 0 to Botpress; going home
+                // is independent of whether that request has finished.
+                if (isEnd) endLessonReturnHome('結束 button');
                 setTimeout(hidePainScale, 220);
               });
             })(it.num, !!it.end);
