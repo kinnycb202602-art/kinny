@@ -1145,13 +1145,20 @@
         scheduleHideMarker('confscale:');
         if (markerIsCurrent('confscale:')) showPainScale(cmn, cmx, true, 'blue'); // confidence gradient
       } else if (/^__lessonend(:.*)?__$/i.test(text)) {
-        // Studio emits this at the end of a lesson. The page takes no action on
-        // it — the ending is driven by the participant tapping 結束本週課程,
-        // which shows the completion screen directly. All this branch does is
-        // stop the marker showing up as a bare bold "lessonend" bubble, which
-        // is what participants saw before it was handled at all.
-        console.log('[VideoTrack] Lesson-end marker seen (no action, hidden)');
+        // ⚠️ THIS marker is what ends the lesson, not the 結束本週課程 pill.
+        // Observed live 2026-09-02: Studio sends 再見～ / 請選擇下一步 and then
+        // __lessonend__, with NO session-menu marker anywhere in that turn. So
+        // no end pill is ever drawn, the pill's click handler never runs, and
+        // hanging the ending off it meant "nothing happened" after the 0 — the
+        // participant was left staring at 請選擇下一步 with a text box.
+        // markerIsCurrent() keeps a replayed transcript from re-opening the
+        // panel after an ordinary refresh.
+        console.log('[VideoTrack] Lesson-end marker — showing the completion screen');
         scheduleHideMarker('lessonend');
+        if (markerIsCurrent('lessonend')) {
+          markWeekEnded(true);
+          showWeekEndScreen();
+        }
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
