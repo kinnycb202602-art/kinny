@@ -1144,14 +1144,6 @@
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
         if (markerIsCurrent('confscale:')) showPainScale(cmn, cmx, true, 'blue'); // confidence gradient
-      } else if (/^__lessonend(:.*)?__$/i.test(text)) {
-        // Studio emits this at the end of a lesson. The page takes no action on
-        // it — the ending is driven by the participant tapping 結束本週課程,
-        // which shows the completion screen directly. All this branch does is
-        // stop the marker showing up as a bare bold "lessonend" bubble, which
-        // is what participants saw before it was handled at all.
-        console.log('[VideoTrack] Lesson-end marker seen (no action, hidden)');
-        scheduleHideMarker('lessonend');
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
@@ -1586,27 +1578,6 @@
     function hideWeekEndScreen() {
       if (_weekEndEl) { try { _weekEndEl.remove(); } catch (e) {} _weekEndEl = null; }
     }
-    // Hide one of the participant's OWN message bubbles by its exact text.
-    // Used for the "0" that 結束本週課程 sends: Botpress needs it, the
-    // participant should never see a bare number in their transcript. The
-    // bubble is rendered a beat after send and Botpress may re-render it, so
-    // this keeps looking for a short while rather than checking once.
-    function hideOutgoingBubble(text, ms) {
-      var want = String(text).trim();
-      var until = Date.now() + (ms || 6000);
-      (function tick() {
-        var sr = bpShadowRoot();
-        if (sr) {
-          var rows = sr.querySelectorAll('.bpMessageContainer[data-direction="outgoing"]');
-          for (var i = rows.length - 1; i >= 0; i--) {
-            if ((rows[i].textContent || '').trim() === want) {
-              rows[i].style.display = 'none';
-            }
-          }
-        }
-        if (Date.now() < until) setTimeout(tick, 200);
-      })();
-    }
     function showWeekEndScreen() {
       if (_weekEndEl && _weekEndEl.isConnected) return;
       var FONT = "-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK','Microsoft JhengHei',sans-serif";
@@ -1631,26 +1602,20 @@
       back.appendChild(p);
       var btn = document.createElement('button');
       btn.type = 'button';
-      btn.textContent = '🏠  返回';
+      btn.textContent = '🔄  重新開始對話';
       btn.style.cssText = 'border:2px solid #2f7d63;background:#fff;color:#2f7d63;' +
         'border-radius:16px;padding:15px 26px;font-family:' + FONT + ';font-size:18px;' +
         'font-weight:700;cursor:pointer;-webkit-tap-highlight-color:transparent;';
       btn.addEventListener('click', function () {
-        console.log('[VideoTrack] Week-end screen → back to the home page');
-        // Clearing the flag here (and in restartConversation) is the ONLY way
-        // out of this screen — updateStartUI no longer clears it on its own.
+        console.log('[VideoTrack] Week-end screen → restart');
         markWeekEnded(false);
-        restartConversation();   // clears Botpress storage and reloads → 開始 home page
+        restartConversation();
       });
       back.appendChild(btn);
       document.body.appendChild(back);
       _weekEndEl = back;
       hideStartButton();
-      // Studio keeps sending messages after the 0 (progress image, 再見,
-      // 請選擇下一步, __lessonend__). They land behind this panel, so they must
-      // not be read aloud either — stop what is speaking AND stay disarmed.
       try { ttsStop(); } catch (e) {}
-      try { ttsDisarm('week ended — completion screen'); } catch (e) {}
       console.log('[VideoTrack] 結束本週課程 — showing the completion screen instead of the login door');
     }
     // Show/hide the whole Botpress composer bar (.bpComposerContainer) via a
@@ -1716,26 +1681,20 @@
         active = false;                      // welcome / empty (fresh load or after reset)
       }
       _convStarted = active;
-      // ⚠️ The week-end check comes FIRST, and nothing clears the flag
-      // automatically. It used to be cleared as soon as a real message appeared
-      // ("Botpress carried on, so the ending is over") — correct while Studio's
-      // End1 was a real end node that emptied the transcript. Studio now keeps
-      // talking after the 0 (progress image, 再見, 請選擇下一步, __lessonend__),
-      // so that rule cancelled the completion screen the instant it was shown.
-      // The flag is cleared in exactly two places now: the 返回 button, and
-      // restartConversation().
-      if (weekEnded()) {
-        // Finished on purpose — show the ending, never the login door, and
-        // never the conversation continuing underneath.
-        setComposerBarHidden(true);
-        hideStartButton();
-        showWeekEndScreen();
-        return;
-      }
+      // A real message on screen means a live conversation again (the user
+      // restarted, or Botpress carried on) — the week-end screen has served its
+      // purpose and must not linger over it.
+      if (active && weekEnded()) markWeekEnded(false);
       if (active) {
         hideStartButton();
         setComposerBarHidden(false);
         setWelcomeLayout(false);
+      } else if (weekEnded()) {
+        // Finished on purpose — show the ending, never the login door.
+        setComposerBarHidden(true);
+        hideStartButton();
+        showWeekEndScreen();
+        return;
       } else {
         // Back at welcome (fresh load or Restart button). Clear any widget left
         // over from the previous conversation, otherwise its stale _painScaleEl
@@ -2302,15 +2261,10 @@
                 b.style.cssText = BASE + SEL;      // selected feedback (like the exercise widget)
                 sendChoice(String(num));           // send just the number
                 console.log('[VideoTrack] Session menu answered:', String(num));
-                // 結束本週課程 sends 0 to Botpress, but from the participant's
-                // side the lesson is over the moment they tap it: hide their own
-                // "0" bubble, show the completion screen straight away, and let
-                // whatever Studio replies with land behind it unseen.
-                if (isEnd) {
-                  markWeekEnded(true);
-                  hideOutgoingBubble(String(num));
-                  showWeekEndScreen();
-                }
+                // 結束本週課程 sends 0, which Studio routes to its End1 end node.
+                // Botpress then empties the transcript, so without this the page
+                // would drop the participant back at the 開始 / login screen.
+                if (isEnd) markWeekEnded(true);
                 setTimeout(hidePainScale, 220);
               });
             })(it.num, !!it.end);
