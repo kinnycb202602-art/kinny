@@ -1153,12 +1153,11 @@
         // participant was left staring at 請選擇下一步 with a text box.
         // markerIsCurrent() keeps a replayed transcript from re-opening the
         // panel after an ordinary refresh.
-        console.log('[VideoTrack] Lesson-end marker — showing the completion screen');
+        // No action: the ending is driven by the 結束本週課程 button, which
+        // returns to the home page directly. This branch only stops the marker
+        // rendering as a bare bold "lessonend" bubble.
+        console.log('[VideoTrack] Lesson-end marker seen (hidden, no action)');
         scheduleHideMarker('lessonend');
-        if (markerIsCurrent('lessonend')) {
-          markWeekEnded(true);
-          showWeekEndScreen();
-        }
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
@@ -2314,9 +2313,15 @@
                 // "0" bubble, show the completion screen straight away, and let
                 // whatever Studio replies with land behind it unseen.
                 if (isEnd) {
-                  markWeekEnded(true);
+                  // emon, 2026-09-02: 結束本週課程 goes STRAIGHT back to the
+                  // Kinny home page — no completion screen in between.
+                  // The 0 still has to reach Botpress, so hide the bubble and
+                  // give the send ~1.2s before the reload tears the page down;
+                  // reloading immediately can abort the request.
+                  markWeekEnded(false);
                   hideOutgoingBubble(String(num));
-                  showWeekEndScreen();
+                  console.log('[VideoTrack] 結束本週課程 — sent 0, returning to the home page');
+                  setTimeout(restartConversation, 1200);
                 }
                 setTimeout(hidePainScale, 220);
               });
