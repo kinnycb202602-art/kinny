@@ -1153,11 +1153,21 @@
         // participant was left staring at 請選擇下一步 with a text box.
         // markerIsCurrent() keeps a replayed transcript from re-opening the
         // panel after an ordinary refresh.
-        // No action: the ending is driven by the 結束本週課程 button, which
-        // returns to the home page directly. This branch only stops the marker
-        // rendering as a bare bold "lessonend" bubble.
-        console.log('[VideoTrack] Lesson-end marker seen (hidden, no action)');
+        // ⚠️ THIS is the reliable end-of-lesson trigger — not the pill's click
+        // handler. Studio sends __lessonend__ *in response to* the 0, so by the
+        // time it arrives the choice has already reached the bot. Hanging the
+        // ending off our own button assumed the button was always ours; twice
+        // the participant tapped 結束本週課程, the 0 went out, and nothing
+        // happened — the 0 bubble stayed on screen, which proves our handler
+        // never got past sendChoice (the button was not flagged as the end
+        // item, or was not drawn by us at all). The marker does not care who
+        // sent the 0.
+        console.log('[VideoTrack] Lesson-end marker — returning to the home page');
         scheduleHideMarker('lessonend');
+        hideOutgoingBubble('0');
+        // No long wait needed: the marker itself is Botpress's acknowledgement
+        // that it received the choice.
+        setTimeout(restartConversation, 600);
       } else if (text.startsWith('__sessionmenu:') && text.endsWith('__')) {
         // __sessionmenu:HEADER|n=on,n=off,…#HEADER2|n=on,…__
         var smSpec = text.slice(14, -2);
