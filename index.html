@@ -434,7 +434,14 @@
     // ── Process a marker text node ────────────────────────────
     // Handles both __prefix:value__ (raw) and prefix:value
     // (Markdown-rendered — Botpress strips __ treating them as bold).
+    // Each marker text node is handled ONCE. Without this every scanAll
+    // re-processed every marker still in the transcript and ended with another
+    // hideBubble() write, which is what fed the mutation loop above. Keyed on
+    // the node, so a genuinely new marker (Botpress renders a new text node)
+    // is still processed.
+    var _markerSeen = new WeakSet();
     function processMarker(text, textNode) {
+      if (textNode && _markerSeen.has(textNode)) return;
       // Strip __ delimiters if present
       var clean = (text.startsWith('__') && text.endsWith('__'))
                   ? text.slice(2, -2).trim()
@@ -466,8 +473,9 @@
         // Just hide the rendered marker bubble; the widget itself is
         // triggered from readMarker (message-event path) to avoid double-show.
       } else {
-        return; // not our marker
+        return; // not our marker — not recorded, so a later scan can retry
       }
+      if (textNode) _markerSeen.add(textNode);
       hideBubble(textNode);
     }
 
@@ -553,7 +561,22 @@
     const trackedAudios = new WeakSet();
     const trackedImages = new WeakSet();
     const observedRoots = new WeakSet();
-    const observer      = new MutationObserver(scanAll);
+    // ⚠️ Coalesced, NEVER call scanAll straight from the observer.
+    // scanAll() walks the whole #bp-embedded tree including every shadow root,
+    // and processMarker() ends by hiding the marker bubble — a DOM write. So a
+    // synchronous observer callback meant: mutation → full walk → write → new
+    // mutation → full walk → … A fresh conversation has no markers so the loop
+    // has no fuel, but a RELOAD replays the whole transcript, and every marker
+    // in it re-fires on every pass. That is why reloading after a deploy (the
+    // one time you reload a page that already has a long conversation) pinned
+    // the main thread and Chrome showed "Page Unresponsive".
+    var _scanQueued = false;
+    function scanAllSoon() {
+      if (_scanQueued) return;
+      _scanQueued = true;
+      requestAnimationFrame(function () { _scanQueued = false; scanAll(); });
+    }
+    const observer      = new MutationObserver(scanAllSoon);
 
     function observeRoot(root) {
       if (observedRoots.has(root)) return;
