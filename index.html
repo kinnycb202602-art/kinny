@@ -1197,12 +1197,34 @@
 
     // ── Mobile/iPad UX helpers ───────────────────────────────
     // Find the Botpress webchat shadow root (it renders in one).
+    // ⚠️ PERFORMANCE — this is called from 33 places, several of them on 250ms
+    // and 1s timers, so it runs many times a second for the life of the page.
+    // It used to run `document.querySelectorAll('*')` and probe every element's
+    // shadowRoot on EVERY call, with no cache. While the webchat is still
+    // mounting there is no `.bpComposerInput` yet, so each of those calls walked
+    // the entire document and found nothing — the most expensive possible
+    // outcome, repeated dozens of times a second, exactly during the loading
+    // screen. That is enough to saturate the main thread and make Chrome show
+    // "Page Unresponsive" while the two loading dots spin (reported live).
+    //
+    // Now: cache the root, and on a miss re-scan at most every 250ms.
+    var _srCache = null, _srMissAt = 0;
     function bpShadowRoot() {
+      // Fast path — cached root still attached and still holding a composer.
+      var c = _srCache;
+      if (c) {
+        try {
+          if (c.host && c.host.isConnected && c.querySelector('.bpComposerInput')) return c;
+        } catch (e) {}
+        _srCache = null;   // stale (Botpress swapped or tore down the root)
+      }
+      var now = Date.now();
+      if (now - _srMissAt < 250) return null;   // don't re-walk the document on every caller
+      _srMissAt = now;
       var els = document.querySelectorAll('*');
       for (var i = 0; i < els.length; i++) {
-        if (els[i].shadowRoot && els[i].shadowRoot.querySelector('.bpComposerInput')) {
-          return els[i].shadowRoot;
-        }
+        var sr = els[i].shadowRoot;
+        if (sr && sr.querySelector('.bpComposerInput')) { _srCache = sr; return sr; }
       }
       return null;
     }
