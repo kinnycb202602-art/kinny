@@ -588,9 +588,21 @@
     var DEVINFO_FLAG  = 'bp-webchat-vt-devinfo';
     var _devInfoTimer = null, _devInfoSent = false;
 
-    function devFlagSet(k) { try { return localStorage.getItem(k) === '1'; } catch (e) { return false; } }
+    // ⚠️ The flag stores an IDENTITY, not a boolean. A bare '1' looked like
+    // "once per conversation" but was really "once per browser, ever": Botpress
+    // starting a new conversation does NOT clear our key, so after one write
+    // every later conversation was skipped and no Device Info appeared again
+    // (observed live 2026-09-22 — d6 had Session 3 and still logged nothing).
+    // Keyed on conversation + account + section, so a genuinely new browser
+    // session writes again and a reload of the same one does not.
+    function devInfoKey() {
+      return (_currentConvId || 'noconv') + '#' + (deviceUid() || '?') + '#' + (currentSession || '?');
+    }
+    function devFlagSet(k) {
+      try { return localStorage.getItem(k) === devInfoKey(); } catch (e) { return false; }
+    }
     function devFlagPut(k, on) {
-      try { if (on) localStorage.setItem(k, '1'); else localStorage.removeItem(k); } catch (e) {}
+      try { if (on) localStorage.setItem(k, devInfoKey()); else localStorage.removeItem(k); } catch (e) {}
     }
     // What the participant saw FIRST this browser session — the entry point.
     // "resumed" means Botpress replayed a stored conversation; "fresh" means
@@ -605,13 +617,15 @@
     function deviceUid() {
       return (currentUserId && currentUserId !== 'unknown') ? currentUserId : typedAccountId();
     }
+    var _devInfoSentKey = '';
     function logDeviceInfo() {
       _devInfoTimer = null;
-      if (_devInfoSent) return;
       var uid = deviceUid();
       if (!uid || !currentSession) return;          // no section yet → do not log
+      var key = devInfoKey();
+      if (_devInfoSent && _devInfoSentKey === key) return;   // already done for THIS one
       if (devFlagSet(DEVINFO_FLAG)) { _devInfoSent = true; return; }
-      _devInfoSent = true;
+      _devInfoSent = true; _devInfoSentKey = key;
       devFlagPut(DEVINFO_FLAG, true);
       var summary = deviceSummary() + ' | ' + hkNow();
       var ua      = (navigator.userAgent || '').slice(0, 300);
@@ -671,9 +685,9 @@
     // moment later; wait briefly so the row is filed against the right session,
     // but never block on it — the device info is worth having either way.
     function logDeviceInfoSoon() {
-      if (_devInfoSent || _devInfoTimer) return;
-      if (!currentSession) return;              // nothing to file yet
-      if (!deviceUid()) return;
+      if (_devInfoTimer) return;
+      if (!currentSession || !deviceUid()) return;          // nothing to file yet
+      if (_devInfoSent && _devInfoSentKey === devInfoKey()) return;
       _devInfoTimer = setTimeout(logDeviceInfo, 0);
     }
 
