@@ -2297,9 +2297,13 @@
         if (oldGroup) groups.push(oldGroup);
         if (newGroup) groups.push(newGroup);
       } else {
-        // placement=start (and any older marker without the key) — untouched.
+        // placement=start — ONLY this week and any later unlocked sessions.
+        // The 🎒 溫習舊內容 group is deliberately dropped here (emon,
+        // 2026-09-22): at the start of a visit the participant should see one
+        // thing, "where do I go now", not a wall of past lessons to re-read.
+        // Revision still appears under placement=whatnext, which is where
+        // someone who has just finished is actually looking for it.
         if (newGroup) groups.push(newGroup);
-        if (oldGroup) groups.push(oldGroup);
       }
       console.log('[VideoTrack] Session menu placement:', place,
                   '| groups:', groups.map(function (g) { return g.kind || g.header; }).join(' / '));
