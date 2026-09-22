@@ -585,24 +585,34 @@
     // 「本週沒有適用的節數」, a wrong account) leaves no device record at all.
     // That is the trade emon chose; if those cases need covering later, they
     // want their own VariableName, not a blank-Session row.
-    var DEVINFO_FLAG  = 'bp-webchat-vt-devinfo';
-    var _devInfoTimer = null, _devInfoSent = false;
-
-    // ⚠️ The flag stores an IDENTITY, not a boolean. A bare '1' looked like
-    // "once per conversation" but was really "once per browser, ever": Botpress
-    // starting a new conversation does NOT clear our key, so after one write
-    // every later conversation was skipped and no Device Info appeared again
-    // (observed live 2026-09-22 — d6 had Session 3 and still logged nothing).
-    // Keyed on conversation + account + section, so a genuinely new browser
-    // session writes again and a reload of the same one does not.
-    function devInfoKey() {
-      return (_currentConvId || 'noconv') + '#' + (deviceUid() || '?') + '#' + (currentSession || '?');
+    // ── Scope of "once" (emon, 2026-09-22) ───────────────────
+    // "個 definition 係 browser section" — the unit is the BROWSER SESSION, and
+    // the rule is deliberately loose: if this browser session has not yet sent
+    // Device Info for this lesson section, send it.
+    //
+    // So the flag lives in sessionStorage, keyed by section:
+    //   • dies with the tab      → a returning browser session sends again
+    //   • survives a reload      → refreshing does not duplicate
+    //   • keyed by section       → a different section in the same session sends
+    //
+    // ⚠️ It used to live in localStorage. That is what broke it twice: a
+    // localStorage flag outlives the conversation AND the tab, so after one
+    // successful write the participant's browser never sent again — d6 had
+    // Session 3 and still logged nothing. Do not move this back to
+    // localStorage.
+    //
+    // The one hard precondition is a lesson section id. Everything else is
+    // permissive on purpose: better a duplicate row than a missing one.
+    var _devInfoTimer = null;
+    function devInfoKey() { return 'vt_devinfo_' + (currentSession || '?'); }
+    function devInfoAlreadySent() {
+      try { return sessionStorage.getItem(devInfoKey()) === '1'; } catch (e) { return false; }
     }
-    function devFlagSet(k) {
-      try { return localStorage.getItem(k) === devInfoKey(); } catch (e) { return false; }
-    }
-    function devFlagPut(k, on) {
-      try { if (on) localStorage.setItem(k, devInfoKey()); else localStorage.removeItem(k); } catch (e) {}
+    function devInfoMarkSent(on) {
+      try {
+        if (on) sessionStorage.setItem(devInfoKey(), '1');
+        else sessionStorage.removeItem(devInfoKey());
+      } catch (e) {}
     }
     // What the participant saw FIRST this browser session — the entry point.
     // "resumed" means Botpress replayed a stored conversation; "fresh" means
@@ -617,16 +627,12 @@
     function deviceUid() {
       return (currentUserId && currentUserId !== 'unknown') ? currentUserId : typedAccountId();
     }
-    var _devInfoSentKey = '';
     function logDeviceInfo() {
       _devInfoTimer = null;
       var uid = deviceUid();
-      if (!uid || !currentSession) return;          // no section yet → do not log
-      var key = devInfoKey();
-      if (_devInfoSent && _devInfoSentKey === key) return;   // already done for THIS one
-      if (devFlagSet(DEVINFO_FLAG)) { _devInfoSent = true; return; }
-      _devInfoSent = true; _devInfoSentKey = key;
-      devFlagPut(DEVINFO_FLAG, true);
+      if (!uid || !currentSession) return;    // needs the lesson section id
+      if (devInfoAlreadySent()) return;       // this browser session already did it
+      devInfoMarkSent(true);
       var summary = deviceSummary() + ' | ' + hkNow();
       var ua      = (navigator.userAgent || '').slice(0, 300);
       var entry   = entryPoint().slice(0, 300);
@@ -648,11 +654,11 @@
       })
       .then(function (res) {
         if (res.ok) { setStatus('success', 'Device info logged'); return; }
-        _devInfoSent = false; devFlagPut(DEVINFO_FLAG, false);   // retry on the next load
+        devInfoMarkSent(false);   // let the next tick retry
         res.text().then(function (t) { console.error('[VideoTrack] Device info API error:', t); });
       })
       .catch(function (e) {
-        _devInfoSent = false; devFlagPut(DEVINFO_FLAG, false);
+        devInfoMarkSent(false);
         console.error('[VideoTrack] Device info network error:', e && e.message);
       });
     }
@@ -686,8 +692,8 @@
     // but never block on it — the device info is worth having either way.
     function logDeviceInfoSoon() {
       if (_devInfoTimer) return;
-      if (!currentSession || !deviceUid()) return;          // nothing to file yet
-      if (_devInfoSent && _devInfoSentKey === devInfoKey()) return;
+      if (!currentSession || !deviceUid()) return;   // nothing to file yet
+      if (devInfoAlreadySent()) return;
       _devInfoTimer = setTimeout(logDeviceInfo, 0);
     }
 
