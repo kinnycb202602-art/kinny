@@ -454,6 +454,7 @@
       } else if (clean.startsWith('session:')) {
         currentSession = clean.slice(8).trim();
         setStatus('ready', 'Session: ' + currentSession);
+        logDeviceInfoSoon();
       } else if (clean.startsWith('placement:')) {
         currentPlacement = clean.slice(10).trim();
         setStatus('ready', 'Placement: ' + currentPlacement);
@@ -690,10 +691,18 @@
     // Called as soon as the account id is known. Session normally arrives a
     // moment later; wait briefly so the row is filed against the right session,
     // but never block on it — the device info is worth having either way.
+    var _devWhy = '';
+    function devWhy(why) {
+      if (_devWhy === why) return;          // log each reason once, not every second
+      _devWhy = why;
+      console.log('[VideoTrack] Device info pending —', why);
+    }
     function logDeviceInfoSoon() {
       if (_devInfoTimer) return;
-      if (!currentSession || !deviceUid()) return;   // nothing to file yet
-      if (devInfoAlreadySent()) return;
+      if (devInfoAlreadySent()) { devWhy('already sent this browser session'); return; }
+      var uid = deviceUid();
+      if (!uid)            { devWhy('no account id yet'); return; }
+      if (!currentSession) { devWhy('no section yet (uid=' + uid + ')'); return; }
       _devInfoTimer = setTimeout(logDeviceInfo, 0);
     }
 
@@ -1323,6 +1332,7 @@
       } else if (text.startsWith('__session:') && text.endsWith('__')) {
         currentSession = text.slice(10, -2).trim();
         setStatus('ready', 'Session: ' + currentSession);
+        logDeviceInfoSoon();
         console.log('[VideoTrack] Session set:', currentSession);
         scheduleHideMarker('session:');
         logConvId(); // log ConversationId if convId already captured & userId is set
@@ -4364,13 +4374,17 @@
     }
 
     function idleTick() {
+      // FIRST, and guarded. This used to sit after wireRestartGuard /
+      // watchdogTick / healthCheck / badAccountCheck, none of which are wrapped
+      // — so a throw in any of them silently starved this for the whole session,
+      // every second, with no device row ever written. Cheap: returns
+      // immediately once sent, or while the section is unknown.
+      try { logDeviceInfoSoon(); } catch (e) {}
       wireRestartGuard();
       watchdogTick();
       healthCheck();
       badAccountCheck();
       try { popupTtsGuardTick(); } catch (e) {}
-      // Cheap: returns immediately once sent, or until an account id exists.
-      try { logDeviceInfoSoon(); } catch (e) {}
       if (!bpShadowRoot()) { idleNudge(); return; }
       if (!hasRealMessages()) { idleNudge(); return; }   // welcome screen — nothing to be idle in
       var sig = idleSignature();
