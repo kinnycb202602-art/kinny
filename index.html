@@ -564,13 +564,15 @@
     var _devInfoTimer = null, _devInfoSent = false;
     function logDeviceInfo() {
       _devInfoTimer = null;
-      if (_devInfoSent || currentUserId === 'unknown') return;
+      if (_devInfoSent) return;
+      var uid = (currentUserId && currentUserId !== 'unknown') ? currentUserId : typedAccountId();
+      if (!uid) return;
       try { if (localStorage.getItem(DEVINFO_FLAG) === '1') { _devInfoSent = true; return; } } catch (e) {}
       _devInfoSent = true;
       try { localStorage.setItem(DEVINFO_FLAG, '1'); } catch (e) {}
       var summary = deviceSummary();
       var ua = (navigator.userAgent || '').slice(0, 300);
-      console.log('[VideoTrack] Device info:', summary);
+      console.log('[VideoTrack] Device info for', uid + ':', summary);
       fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
         method: 'POST',
         headers: {
@@ -580,9 +582,9 @@
         },
         body: JSON.stringify({
           rows: [
-            { UserId: currentUserId, Session: currentSession,
+            { UserId: uid, Session: currentSession,
               VariableName: 'Device Info', VariableValue: summary },
-            { UserId: currentUserId, Session: currentSession,
+            { UserId: uid, Session: currentSession,
               VariableName: 'User Agent',  VariableValue: ua }
           ]
         })
@@ -602,12 +604,38 @@
         console.error('[VideoTrack] Device info network error:', e && e.message);
       });
     }
+    // Fallback source for the account id — reproduced live 2026-09-22.
+    // __userid:__ is only emitted on the SUCCESSFUL login path. Logging in as
+    // d1 when its schedule was out of range produced 「本週沒有適用的節數。」
+    // and a re-ask, with no userid marker at all — so currentUserId stayed
+    // 'unknown' and nothing was ever filed. That is exactly backwards: the
+    // participants whose device we most want to know about are the ones hitting
+    // trouble. So read the id the participant TYPED instead, straight off the
+    // transcript: the outgoing bubble that answers 請輸入你的帳號.
+    function typedAccountId() {
+      var sr = bpShadowRoot();
+      if (!sr) return '';
+      var rows = sr.querySelectorAll('.bpMessageContainer[data-direction="incoming"],' +
+                                     '.bpMessageContainer[data-direction="outgoing"]');
+      for (var i = 1; i < rows.length; i++) {
+        var prev = rows[i - 1], cur = rows[i];
+        if (cur.getAttribute('data-direction') !== 'outgoing') continue;
+        if (prev.getAttribute('data-direction') !== 'incoming') continue;
+        if (!/請輸入你的帳號/.test(prev.textContent || '')) continue;
+        var t = (cur.textContent || '').trim();
+        // An account id, not a sentence: short and unbroken.
+        if (t && t.length <= 32 && !/\s/.test(t)) return t;
+      }
+      return '';
+    }
     // Called as soon as the account id is known. Session normally arrives a
     // moment later; wait briefly so the row is filed against the right session,
     // but never block on it — the device info is worth having either way.
     function logDeviceInfoSoon() {
-      if (_devInfoSent || _devInfoTimer || currentUserId === 'unknown') return;
-      _devInfoTimer = setTimeout(logDeviceInfo, currentSession ? 0 : 2500);
+      if (_devInfoSent || _devInfoTimer) return;
+      var known = (currentUserId && currentUserId !== 'unknown');
+      if (!known && !typedAccountId()) return;
+      _devInfoTimer = setTimeout(logDeviceInfo, (known && currentSession) ? 0 : 2500);
     }
 
     function logConvId() {
@@ -4282,6 +4310,8 @@
       healthCheck();
       badAccountCheck();
       try { popupTtsGuardTick(); } catch (e) {}
+      // Cheap: returns immediately once sent, or until an account id exists.
+      try { logDeviceInfoSoon(); } catch (e) {}
       if (!bpShadowRoot()) { idleNudge(); return; }
       if (!hasRealMessages()) { idleNudge(); return; }   // welcome screen — nothing to be idle in
       var sig = idleSignature();
