@@ -450,6 +450,7 @@
       if (clean.startsWith('userid:')) {
         currentUserId = clean.slice(7).trim();
         setStatus('ready', 'UserId: ' + currentUserId);
+        logDeviceInfoSoon();
       } else if (clean.startsWith('session:')) {
         currentSession = clean.slice(8).trim();
         setStatus('ready', 'Session: ' + currentSession);
@@ -508,6 +509,107 @@
     // ── Log ConversationId (once per page load, from client side) ──
     // VariableName = "ConversationId", VariableValue = actual conv_01... ID
     // Waits until both userId and session markers have arrived, then logs once.
+    // ── Device + browser of the participant ──────────────────
+    // emon asked to know what each participant is actually using — the iPhone
+    // bugs (silent read-aloud, missing input bar) were all device-specific and
+    // we had no record of who was on what. Filed to UserInputTable once the
+    // account id is known, so it sits beside that participant's other rows.
+    function uaBrowser(ua) {
+      var m;
+      if ((m = /Edg(?:iOS|A|)\/([\d.]+)/.exec(ua)))         return 'Edge ' + m[1];
+      if ((m = /OPR\/([\d.]+)/.exec(ua)))                   return 'Opera ' + m[1];
+      if ((m = /SamsungBrowser\/([\d.]+)/.exec(ua)))        return 'Samsung Internet ' + m[1];
+      if ((m = /CriOS\/([\d.]+)/.exec(ua)))                 return 'Chrome iOS ' + m[1];
+      if ((m = /FxiOS\/([\d.]+)/.exec(ua)))                 return 'Firefox iOS ' + m[1];
+      if ((m = /Firefox\/([\d.]+)/.exec(ua)))               return 'Firefox ' + m[1];
+      if ((m = /Chrome\/([\d.]+)/.exec(ua)))                return 'Chrome ' + m[1];
+      if ((m = /Version\/([\d.]+).*Safari/.exec(ua)))       return 'Safari ' + m[1];
+      if (/Safari/.test(ua))                                return 'Safari (no version)';
+      return 'unknown browser';
+    }
+    function uaOS(ua) {
+      var m;
+      if ((m = /Android\s+([\d.]+)/.exec(ua)))              return 'Android ' + m[1];
+      if ((m = /(?:iPhone|CPU) OS ([\d_]+)/.exec(ua)))      return 'iOS ' + m[1].replace(/_/g, '.');
+      if (/iPad|iPhone|iPod/.test(ua))                      return 'iOS';
+      if ((m = /Mac OS X ([\d_]+)/.exec(ua)))               return 'macOS ' + m[1].replace(/_/g, '.');
+      if (/Mac OS X/.test(ua))                              return 'macOS';
+      if ((m = /Windows NT ([\d.]+)/.exec(ua)))             return 'Windows NT ' + m[1];
+      if (/Linux/.test(ua))                                 return 'Linux';
+      return 'unknown OS';
+    }
+    function deviceKind(ua) {
+      if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return 'tablet (iPad)';
+      if (/iPhone|iPod/.test(ua))                       return 'phone (iPhone)';
+      if (/Android/.test(ua)) return /Mobile/.test(ua) ? 'phone (Android)' : 'tablet (Android)';
+      return 'desktop';
+    }
+    function deviceSummary() {
+      var ua = navigator.userAgent || '';
+      var sw = (window.screen && screen.width)  || 0;
+      var sh = (window.screen && screen.height) || 0;
+      return [uaBrowser(ua),
+              uaOS(ua),
+              deviceKind(ua),
+              'screen ' + sw + 'x' + sh,
+              'viewport ' + window.innerWidth + 'x' + window.innerHeight,
+              'dpr ' + (window.devicePixelRatio || 1),
+              navigator.language || '?'].join(' | ');
+    }
+    // Once per conversation, not once per page load — the userid marker replays
+    // on every reload. The bp-webchat- prefix means the 7-day reset and
+    // restartConversation() both clear it, so a new conversation records the
+    // device again (it may genuinely have changed).
+    var DEVINFO_FLAG = 'bp-webchat-vt-devinfo';
+    var _devInfoTimer = null, _devInfoSent = false;
+    function logDeviceInfo() {
+      _devInfoTimer = null;
+      if (_devInfoSent || currentUserId === 'unknown') return;
+      try { if (localStorage.getItem(DEVINFO_FLAG) === '1') { _devInfoSent = true; return; } } catch (e) {}
+      _devInfoSent = true;
+      try { localStorage.setItem(DEVINFO_FLAG, '1'); } catch (e) {}
+      var summary = deviceSummary();
+      var ua = (navigator.userAgent || '').slice(0, 300);
+      console.log('[VideoTrack] Device info:', summary);
+      fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + PAT,
+          'x-bot-id':      BOT_ID,
+          'Content-Type':  'application/json'
+        },
+        body: JSON.stringify({
+          rows: [
+            { UserId: currentUserId, Session: currentSession,
+              VariableName: 'Device Info', VariableValue: summary },
+            { UserId: currentUserId, Session: currentSession,
+              VariableName: 'User Agent',  VariableValue: ua }
+          ]
+        })
+      })
+      .then(function (res) {
+        if (res.ok) { setStatus('success', 'Device info logged'); }
+        else {
+          // Let a failed write be retried on the next load rather than lost.
+          _devInfoSent = false;
+          try { localStorage.removeItem(DEVINFO_FLAG); } catch (e) {}
+          res.text().then(function (t) { console.error('[VideoTrack] Device info API error:', t); });
+        }
+      })
+      .catch(function (e) {
+        _devInfoSent = false;
+        try { localStorage.removeItem(DEVINFO_FLAG); } catch (e2) {}
+        console.error('[VideoTrack] Device info network error:', e && e.message);
+      });
+    }
+    // Called as soon as the account id is known. Session normally arrives a
+    // moment later; wait briefly so the row is filed against the right session,
+    // but never block on it — the device info is worth having either way.
+    function logDeviceInfoSoon() {
+      if (_devInfoSent || _devInfoTimer || currentUserId === 'unknown') return;
+      _devInfoTimer = setTimeout(logDeviceInfo, currentSession ? 0 : 2500);
+    }
+
     function logConvId() {
       if (_convIdLogged || !_currentConvId ||
           currentUserId === 'unknown' || !currentSession) return;
@@ -1128,6 +1230,7 @@
         currentUserId = text.slice(9, -2).trim().replace(/\s+/g, '');
         setStatus('ready', 'UserId: ' + currentUserId);
         console.log('[VideoTrack] UserId set:', currentUserId);
+        logDeviceInfoSoon();
         scheduleHideMarker('userid:');
         logConvId(); // log ConversationId if convId already captured & session is set
       } else if (text.startsWith('__session:') && text.endsWith('__')) {
