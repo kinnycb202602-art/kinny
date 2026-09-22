@@ -573,72 +573,34 @@
     // on every reload. The bp-webchat- prefix means the 7-day reset and
     // restartConversation() both clear it, so a new conversation records the
     // device again (it may genuinely have changed).
-    // Two writes per conversation, deliberately:
-    //   stage 1 "login"   — as soon as an account id exists. Session may still
-    //                       be blank; better a device record with no section
-    //                       than none at all, since the participants we most
-    //                       need to identify are the ones who never get a
-    //                       section (see typedAccountId below).
-    //   stage 2 "session"  — once the section IS known, on the participant's
-    //                       first input after that, so the record carries the
-    //                       section it belongs to.
-    // Both carry an HK timestamp and the entry point, so a returning browser
-    // session can be told apart from a fresh one.
-    var DEVINFO_FLAG  = 'bp-webchat-vt-devinfo';     // stage 1 done
-    var DEVINFO_FLAG2 = 'bp-webchat-vt-devinfo-s';   // stage 2 done
-    var _devInfoTimer = null, _devInfoSent = false, _devInfoSent2 = false;
-    var _devOutAtSession = -1;
+    // ONE write per conversation, and only once the section is known.
+    // emon, 2026-09-22: 冇 session info 就唔好 log device，直到有 session info
+    // 才 log 一次. An earlier version also filed a row as soon as the account id
+    // existed, on the theory that a device record with no section beats none —
+    // in practice that just put rows with a blank Session into the study table,
+    // several per participant across reloads. A record that cannot be tied to a
+    // section is noise here, so the section is now a hard precondition.
+    //
+    // Consequence worth knowing: a participant who NEVER gets a section (e.g.
+    // 「本週沒有適用的節數」, a wrong account) leaves no device record at all.
+    // That is the trade emon chose; if those cases need covering later, they
+    // want their own VariableName, not a blank-Session row.
+    var DEVINFO_FLAG  = 'bp-webchat-vt-devinfo';
+    var _devInfoTimer = null, _devInfoSent = false;
 
     function devFlagSet(k) { try { return localStorage.getItem(k) === '1'; } catch (e) { return false; } }
     function devFlagPut(k, on) {
       try { if (on) localStorage.setItem(k, '1'); else localStorage.removeItem(k); } catch (e) {}
     }
-    function outgoingCount() {
-      var sr = bpShadowRoot();
-      if (!sr) return 0;
-      return sr.querySelectorAll('.bpMessageContainer[data-direction="outgoing"]').length;
-    }
     // What the participant saw FIRST this browser session — the entry point.
-    // "resumed" means Botpress replayed an existing conversation from
-    // localStorage; "fresh" means this is a brand-new one.
+    // "resumed" means Botpress replayed a stored conversation; "fresh" means
+    // this one was created now.
     function entryPoint() {
       var sr = bpShadowRoot();
       if (!sr) return 'unknown';
       var first = sr.querySelector('.bpMessageContainer[data-direction="incoming"]');
       var txt = first ? (first.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 90) : '(none)';
-      var resumed = _resumedAtBoot ? 'resumed' : 'fresh';
-      return resumed + ' | first bot message: ' + txt;
-    }
-    function postDeviceRows(uid, session, stage) {
-      var summary = deviceSummary() + ' | ' + hkNow();
-      var ua      = (navigator.userAgent || '').slice(0, 300);
-      var entry   = entryPoint().slice(0, 300);
-      console.log('[VideoTrack] Device info (' + stage + ') for ' + uid +
-                  ' section=' + (session || '-') + ':', summary);
-      return fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + PAT,
-          'x-bot-id':      BOT_ID,
-          'Content-Type':  'application/json'
-        },
-        body: JSON.stringify({
-          rows: [
-            { UserId: uid, Session: session, VariableName: 'Device Info', VariableValue: summary },
-            { UserId: uid, Session: session, VariableName: 'User Agent',  VariableValue: ua },
-            { UserId: uid, Session: session, VariableName: 'Entry Point', VariableValue: entry }
-          ]
-        })
-      }).then(function (res) {
-        if (res.ok) { setStatus('success', 'Device info logged (' + stage + ')'); return true; }
-        return res.text().then(function (t) {
-          console.error('[VideoTrack] Device info API error (' + stage + '):', t);
-          return false;
-        });
-      }).catch(function (e) {
-        console.error('[VideoTrack] Device info network error (' + stage + '):', e && e.message);
-        return false;
-      });
+      return (_resumedAtBoot ? 'resumed' : 'fresh') + ' | first bot message: ' + txt;
     }
     function deviceUid() {
       return (currentUserId && currentUserId !== 'unknown') ? currentUserId : typedAccountId();
@@ -647,28 +609,37 @@
       _devInfoTimer = null;
       if (_devInfoSent) return;
       var uid = deviceUid();
-      if (!uid) return;
+      if (!uid || !currentSession) return;          // no section yet → do not log
       if (devFlagSet(DEVINFO_FLAG)) { _devInfoSent = true; return; }
       _devInfoSent = true;
       devFlagPut(DEVINFO_FLAG, true);
-      postDeviceRows(uid, currentSession, 'login').then(function (ok) {
-        if (!ok) { _devInfoSent = false; devFlagPut(DEVINFO_FLAG, false); }  // retry next load
-      });
-    }
-    // Stage 2. Waits for the section, then for the participant's next input —
-    // emon: "等到攞到 section 之後嘅第一個 input 先至再 submit 一次".
-    function logDeviceInfoWithSession() {
-      if (_devInfoSent2 || !currentSession) return;
-      var uid = deviceUid();
-      if (!uid) return;
-      if (devFlagSet(DEVINFO_FLAG2)) { _devInfoSent2 = true; return; }
-      var n = outgoingCount();
-      if (_devOutAtSession < 0) { _devOutAtSession = n; return; }  // baseline: the moment the section landed
-      if (n <= _devOutAtSession) return;                           // no new input yet
-      _devInfoSent2 = true;
-      devFlagPut(DEVINFO_FLAG2, true);
-      postDeviceRows(uid, currentSession, 'session').then(function (ok) {
-        if (!ok) { _devInfoSent2 = false; devFlagPut(DEVINFO_FLAG2, false); }
+      var summary = deviceSummary() + ' | ' + hkNow();
+      var ua      = (navigator.userAgent || '').slice(0, 300);
+      var entry   = entryPoint().slice(0, 300);
+      console.log('[VideoTrack] Device info for ' + uid + ' section=' + currentSession + ':', summary);
+      fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows', {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + PAT,
+          'x-bot-id':      BOT_ID,
+          'Content-Type':  'application/json'
+        },
+        body: JSON.stringify({
+          rows: [
+            { UserId: uid, Session: currentSession, VariableName: 'Device Info', VariableValue: summary },
+            { UserId: uid, Session: currentSession, VariableName: 'User Agent',  VariableValue: ua },
+            { UserId: uid, Session: currentSession, VariableName: 'Entry Point', VariableValue: entry }
+          ]
+        })
+      })
+      .then(function (res) {
+        if (res.ok) { setStatus('success', 'Device info logged'); return; }
+        _devInfoSent = false; devFlagPut(DEVINFO_FLAG, false);   // retry on the next load
+        res.text().then(function (t) { console.error('[VideoTrack] Device info API error:', t); });
+      })
+      .catch(function (e) {
+        _devInfoSent = false; devFlagPut(DEVINFO_FLAG, false);
+        console.error('[VideoTrack] Device info network error:', e && e.message);
       });
     }
 
@@ -701,9 +672,9 @@
     // but never block on it — the device info is worth having either way.
     function logDeviceInfoSoon() {
       if (_devInfoSent || _devInfoTimer) return;
-      var known = (currentUserId && currentUserId !== 'unknown');
-      if (!known && !typedAccountId()) return;
-      _devInfoTimer = setTimeout(logDeviceInfo, (known && currentSession) ? 0 : 2500);
+      if (!currentSession) return;              // nothing to file yet
+      if (!deviceUid()) return;
+      _devInfoTimer = setTimeout(logDeviceInfo, 0);
     }
 
     function logConvId() {
@@ -4380,7 +4351,6 @@
       try { popupTtsGuardTick(); } catch (e) {}
       // Cheap: returns immediately once sent, or until an account id exists.
       try { logDeviceInfoSoon(); } catch (e) {}
-      try { logDeviceInfoWithSession(); } catch (e) {}
       if (!bpShadowRoot()) { idleNudge(); return; }
       if (!hasRealMessages()) { idleNudge(); return; }   // welcome screen — nothing to be idle in
       var sig = idleSignature();
