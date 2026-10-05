@@ -928,6 +928,7 @@
     function attachToVideo(v) {
       if (trackedVideos.has(v)) return;
       trackedVideos.add(v);
+      try { exDecorateVideo(v); } catch (e) { console.warn('[VideoTrack] exercise strip:', e && e.message); }
       setStatus('ready', 'Video detected — listeners attached');
       wireFullscreenLandscape();
       // One native expand button, YouTube-style. iOS opens Apple's native player
@@ -1226,15 +1227,39 @@
     }
 
     // Final sizing, applied once the image has real pixels to measure.
+    //
+    // 2026-10-05 (emon): show the WHOLE picture, never a crop. Botpress's own
+    // stylesheet forces .bpMessageBlocksImageImage into a fixed box —
+    // aspect-ratio 4/3 (landscape) or 3/4 (portrait) — with object-fit:cover,
+    // so any picture that isn't exactly that shape got its edges cut off.
+    // Overridden here: the box takes the file's OWN aspect ratio and
+    // object-fit is contain. Width = as wide as the bubble allows, but never so
+    // tall that it exceeds IMG_MAX_VH of the visible screen height:
+    //   width = min(100%, IMG_MAX_VH * ratio)   height follows the ratio.
+    // Small files are scaled UP to fill the width too. dvh (the visible
+    // height, excluding mobile browser bars) is used where supported, vh is
+    // the fallback — setProperty silently ignores a value the browser rejects.
     function applyImgSizing(img) {
       try {
         img.classList.remove('vt-img-loading');
         img.style.removeProperty('min-height');
-        img.style.setProperty('width',      'auto',              'important');
-        img.style.setProperty('height',     'auto',              'important');
-        img.style.setProperty('max-width',  '100%',              'important');
-        img.style.setProperty('max-height', IMG_MAX_VH + 'vh',   'important');
-        img.style.setProperty('display',    'block',             'important');
+        var nw = img.naturalWidth, nh = img.naturalHeight;
+        img.style.setProperty('object-fit', 'contain', 'important');
+        img.style.setProperty('display',    'block',   'important');
+        img.style.setProperty('height',     'auto',    'important');
+        img.style.setProperty('max-width',  '100%',    'important');
+        img.style.setProperty('max-height', 'none',    'important');
+        if (nw > 0 && nh > 0) {
+          var r = nw / nh;
+          img.style.setProperty('aspect-ratio', nw + ' / ' + nh, 'important');
+          img.style.setProperty('width', 'calc(' + IMG_MAX_VH + 'vh * '  + r + ')', 'important');
+          img.style.setProperty('width', 'calc(' + IMG_MAX_VH + 'dvh * ' + r + ')', 'important');
+        } else {
+          img.style.setProperty('aspect-ratio', 'auto', 'important');
+          img.style.setProperty('width',      'auto',              'important');
+          img.style.setProperty('max-height', IMG_MAX_VH + 'vh',   'important');
+          img.style.setProperty('max-height', IMG_MAX_VH + 'dvh',  'important');
+        }
       } catch (e) {}
     }
 
@@ -1286,6 +1311,8 @@
 
     function attachToImage(img) {
       if (trackedImages.has(img)) return;
+      // Pictures inside our own choice buttons are not chat images — no resize, no ⤢.
+      if (img.getAttribute && img.getAttribute('data-vt-choice-img')) return;
       // Skip tiny icons / avatars (< 60 px wide)
       if (img.complete && img.naturalWidth > 0 && img.naturalWidth < 60) return;
       // Skip circular images (bot logo / avatar — border-radius: 50%)
@@ -1358,7 +1385,7 @@
         var mx = parseInt(parts[1], 10); if (isNaN(mx)) mx = 10;
         console.log('[VideoTrack] Pain scale widget:', mn, '-', mx);
         scheduleHideMarker('painscale:');
-        if (markerIsCurrent('painscale:')) showPainScale(mn, mx, true);   // colored green→red
+        whenMarkerCurrent('painscale:', function () { showPainScale(mn, mx, true); });   // colored green→red
       } else if (text.startsWith('__confscale:') && text.endsWith('__')) {
         var cspec  = text.slice(12, -2).trim();         // e.g. "0-10"
         var cparts = cspec.split('-');
@@ -1366,7 +1393,7 @@
         var cmx = parseInt(cparts[1], 10); if (isNaN(cmx)) cmx = 10;
         console.log('[VideoTrack] Confidence scale widget:', cmn, '-', cmx);
         scheduleHideMarker('confscale:');
-        if (markerIsCurrent('confscale:')) showPainScale(cmn, cmx, true, 'blue'); // confidence gradient
+        whenMarkerCurrent('confscale:', function () { showPainScale(cmn, cmx, true, 'blue'); }); // confidence gradient
       } else if (/^__lessonend(:.*)?__$/i.test(text)) {
         // ⚠️ THIS marker is what ends the lesson, not the 結束本週課程 pill.
         // Observed live 2026-09-02: Studio sends 再見～ / 請選擇下一步 and then
@@ -1422,7 +1449,7 @@
         console.log('[VideoTrack] Choice widget:', key, ctype, opts);
         scheduleHideMarker(key.toLowerCase() + ':');
         if (opts.length) {
-          if (markerIsCurrent(key.toLowerCase() + ':')) showChoice(ctype, opts);
+          whenMarkerCurrent(key.toLowerCase() + ':', function () { showChoice(ctype, opts, key.toLowerCase()); });
         } else {
           console.warn('[VideoTrack] Choice marker "' + key + '" has no options — hiding it ' +
             'but no widget will render. Fix in Studio: __' + key + ':' + ctype + ':Option1|Option2__');
@@ -1544,6 +1571,17 @@
         '.bpMessageBlocksBubble table p,.bpMessageBlocksBubble table span,' +
         '.bpMessageContainer table p,.bpMessageContainer table span{' +
           'font-size:inherit!important;line-height:inherit!important;margin:0!important;}' +
+        // Message text spacing (emon, 2026-10-05): Botpress's markdown bubbles use a
+        // tight fixed line-height, so wrapped lines in numbered lists ran into each
+        // other. Relative line-height + a little space between paragraphs/items.
+        '.bpMessageBlocksBubble{line-height:1.6!important;}' +
+        '.bpMessageBlocksBubble :is(p,li,ol,ul,span,strong,em,b,i,a,div){line-height:1.6!important;}' +
+        '.bpMessageBlocksBubble p{margin:0 0 .6em!important;}' +
+        '.bpMessageBlocksBubble p:last-child{margin-bottom:0!important;}' +
+        '.bpMessageBlocksBubble :is(ol,ul){margin:.5em 0 0!important;padding-left:1.7em!important;list-style-position:outside!important;}' +
+        '.bpMessageBlocksBubble li{margin:0 0 .5em!important;padding-left:.15em!important;}' +
+        '.bpMessageBlocksBubble li:last-child{margin-bottom:0!important;}' +
+        '.bpMessageBlocksBubble li > p{margin:0!important;}' +
         // NOTE: Botpress's own grey "scroll to newest" circle
         // (.bpMessageListScrollDownButton) is deliberately LEFT ALONE. It was
         // hidden for a day in favour of a custom green button; emon reverted
@@ -2343,8 +2381,36 @@
       } catch (err) { console.error('[VideoTrack] Choice send error:', err); }
       beginPostSendLock();   // answered a choice → lock until the bot replies
     }
-    function buildChoice(type, options) {
+    // Optional pictures for choice buttons: CHOICE_IMAGES[markerKey][value] = image URL.
+    // A marker whose key has at least one URL here renders picture cards
+    // (image on top, label underneath) instead of plain pills. Empty → plain pills.
+    var CHOICE_IMAGES = {
+      exercisepick: {
+        '1': 'assets/exercise-set1.png',   // 第一節運動配圖 (kinny_D_07_illustration-set1)
+        '2': 'assets/exercise-set2.png'    // 第二節運動配圖 (kinny_D_08_illustration-set2)
+      }
+    };
+    // Option text may be "顯示文字=送出值" (ASCII or full-width =). The button shows
+    // the label; Botpress receives the value — e.g. 第一節運動=1 sends "1" so a
+    // Capture card with choices 1 / 2 can branch on it. No "=" → label is sent.
+    function parseChoiceOption(o) {
+      if (o && typeof o === 'object') return { label: String(o.label), value: String(o.value != null ? o.value : o.label) };
+      var t = String(o);
+      var i = Math.max(t.lastIndexOf('='), t.lastIndexOf('＝'));
+      if (i > 0 && i < t.length - 1) {
+        return { label: t.slice(0, i).trim(), value: t.slice(i + 1).trim() };
+      }
+      return { label: t.trim(), value: t.trim() };
+    }
+    function buildChoice(type, options, key) {
       var multi = (type === 'multiplechoice');
+      options = options.map(parseChoiceOption);
+      // 第一節 always on the LEFT (emon, 2026-10-04), whatever order Studio lists them in.
+      if (key === 'exercisepick') {
+        options.sort(function (a, b) { return (parseInt(a.value, 10) || 0) - (parseInt(b.value, 10) || 0); });
+      }
+      var imgs = CHOICE_IMAGES[key || ''] || {};
+      var withPics = options.some(function (o) { return !!imgs[o.value]; });
       var wrap = document.createElement('div');
       wrap.id = 'vt-choice';
       // Left padding aligns the buttons with the bot message bubble's left edge:
@@ -2371,7 +2437,19 @@
                  'white-space:nowrap;flex:0 0 auto;';
       var selected = [];
       var confirmBtn = null;
-      function paint(b, on) { b.style.cssText = BASE + (on ? ON : OFF); }
+      var PIC = 'border:none;border-radius:12px;padding:8px 8px 12px;' +
+                'font-family:inter,sans-serif;font-size:20px;font-weight:400;cursor:pointer;' +
+                'line-height:24px;box-sizing:border-box;-webkit-tap-highlight-color:transparent;' +
+                'display:flex;flex-direction:column;align-items:center;gap:8px;' +
+                'flex:1 1 140px;max-width:260px;';
+      function paint(b, on) { b.style.cssText = (withPics ? PIC : BASE) + (on ? ON : OFF); }
+      // A value that differs from its label is a machine value ("1") — hide the
+      // participant's bare-number bubble after sending, as for the 結束 "0".
+      function send(v, label) {
+        if (key === 'exercisepick') exRememberPick(v);
+        sendChoice(v);
+        if (v !== label) hideOutgoingBubble(v);
+      }
       function updateConfirm() {
         if (!confirmBtn) return;
         var n = selected.length;
@@ -2380,10 +2458,24 @@
         confirmBtn.style.cursor  = n === 0 ? 'default' : 'pointer';
         confirmBtn.textContent = n ? ('確認 (' + n + ')') : '確認';
       }
-      options.forEach(function (opt) {
+      options.forEach(function (o) {
+        var opt = o.value;
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = opt;
+        b.setAttribute('data-vt-value', o.value);
+        if (withPics && imgs[o.value]) {
+          var im = document.createElement('img');
+          im.src = imgs[o.value];
+          im.alt = o.label;
+          im.setAttribute('data-vt-choice-img', '1');   // not an enlargeable chat image
+          im.style.cssText = 'display:block;width:100%;height:auto;border-radius:8px;pointer-events:none;';
+          b.appendChild(im);
+          var cap = document.createElement('span');
+          cap.textContent = o.label;
+          b.appendChild(cap);
+        } else {
+          b.textContent = o.label;
+        }
         paint(b, false);
         if (multi) {
           b.addEventListener('click', function (e) {
@@ -2398,7 +2490,7 @@
             e.stopPropagation();
             if (wrap._done) return; wrap._done = true;
             paint(b, true);
-            sendChoice(opt);
+            send(opt, o.label);
             setTimeout(hidePainScale, 220);
           });
         }
@@ -2417,7 +2509,7 @@
         confirmBtn.addEventListener('click', function (e) {
           e.stopPropagation();
           if (!selected.length || wrap._done) return; wrap._done = true;
-          sendChoice(selected.join('/'));         // e.g. 上午/下午 (string, not array)
+          sendChoice(selected.join('/'));         // e.g. 上午/下午 (string, not array) — values
           setTimeout(hidePainScale, 220);
         });
         updateConfirm();
@@ -2426,12 +2518,194 @@
       }
       return wrap;
     }
-    function showChoice(type, options) {
+    function showChoice(type, options, key) {
       if (!options || !options.length) return;
       hidePainScale();                       // one inline widget at a time
-      _painScaleEl = buildChoice(type, options);
+      _painScaleEl = buildChoice(type, options, key);
       attachPainScaleInline();
       refreshComposerLock();   // widget on screen → typing locked
+      if (key === 'exercisepick') {
+        try { exEnhancePick(_painScaleEl); } catch (e) { console.warn('[VideoTrack] exercise pick extras:', e && e.message); }
+      }
+    }
+
+    // =========================================================
+    // WEEKLY EXERCISE VARIATIONS — sessions 4–8 (page only, no Botpress change)
+    // =========================================================
+    // Everything here reads what Botpress already sends:
+    //   __session__ / __userid__ / __currentvideoclipno__ (from "3a1. Play Video - logistic")
+    //   __exercisepick__ (the 第一節／第二節 choice)
+    //   UserInputTable rows "Video Choice ( … )" (Botpress writes one per pick, value 1 or 2)
+    // Edit the wording here. Sessions not listed get nothing extra.
+    var EX_WEEK = {
+      4: { cue: '今週留意：邊度覺得繃緊' },
+      5: { cue: '做完對自己講句好說話', suggestOther: true },
+      6: { cue: '跟住呼吸，慢慢數 1 至 4' },
+      7: { cue: '做嘅時候試下微笑', recap: [4, 5, 6] },
+      8: { cue: '',                recapCues: [4, 5, 6, 7] }
+    };
+    var EX_PART_NAME  = { '1': '第一節', '2': '第二節' };
+    var EX_CLIP_LABEL = { 1: '熱身', 2: '第一節運動', 3: '第二節運動', 4: '拉伸' };
+    var EX_BOX = 'box-sizing:border-box;display:block;width:100%;margin:0 0 8px;padding:8px 12px;' +
+                 'border-radius:10px;background:#eef3f4;color:#14292d;' +
+                 "font-family:-apple-system,BlinkMacSystemFont,'PingFang HK','Noto Sans HK',sans-serif;" +
+                 'font-size:17px;line-height:1.5;text-align:left;';
+
+    function exWeek() {
+      var s = parseInt(currentSession, 10);
+      return EX_WEEK[s] ? { s: s, cfg: EX_WEEK[s] } : null;
+    }
+
+    // ── 1. Progress strip above each exercise video ──────────
+    // "第 2/3 段 · 第一節運動" (+ this week's cue on the main exercise).
+    // Values are stamped when the card first appears, so a later marker cannot relabel it.
+    var _exStampPending = [];
+    function exDecorateVideo(v) {
+      var w = exWeek();
+      if (!w) return;
+      if (currentPlacement === 'Homework Practice') return;
+      var clip = parseInt(currentVideoClipNo, 10);
+      if (!(clip >= 1 && clip <= 4)) return;
+      var total = (w.s === 8) ? 4 : 3;
+      var step = (w.s === 8) ? clip : (clip === 1 ? 1 : clip === 4 ? 3 : 2);
+      v.setAttribute('data-vt-ex', w.s + ':' + clip);
+      if (!v.parentNode) return;
+      var strip = document.createElement('div');
+      strip.setAttribute('data-vt-ex-strip', '1');
+      strip.style.cssText = EX_BOX;
+      var line1 = document.createElement('div');
+      line1.style.cssText = 'font-weight:600;';
+      line1.textContent = '第 ' + step + '/' + total + ' 段 · ' + EX_CLIP_LABEL[clip];
+      strip.appendChild(line1);
+      if (w.cfg.cue && (clip === 2 || clip === 3)) {
+        var line2 = document.createElement('div');
+        line2.textContent = '💡 ' + w.cfg.cue;
+        strip.appendChild(line2);
+      }
+      v.parentNode.insertBefore(strip, v);
+      if (clip === 4) { v._vtExSession = w.s; _exStampPending.push(v); exStampTick(); }
+    }
+
+    // ── 2. Completion stamp under the stretch video ──────────
+    // Shown once the participant has answered after it (their OK), which also
+    // works on a reload: any outgoing row AFTER the video means it was done.
+    function exStampTick() {
+      if (!_exStampPending.length) return;
+      var sr = bpShadowRoot();
+      if (!sr) return;
+      var outs = sr.querySelectorAll('.bpMessageContainer[data-direction="outgoing"]');
+      _exStampPending = _exStampPending.filter(function (v) {
+        if (!v.isConnected) return false;
+        var done = false;
+        for (var i = outs.length - 1; i >= 0; i--) {
+          if (v.compareDocumentPosition(outs[i]) & Node.DOCUMENT_POSITION_FOLLOWING) { done = true; break; }
+        }
+        if (!done) return true;
+        exAddStamp(v);
+        return false;
+      });
+    }
+    setInterval(exStampTick, 1000);
+    function exAddStamp(v) {
+      if (!v.parentNode || v._vtExStamped) return;
+      v._vtExStamped = true;
+      var box = document.createElement('div');
+      box.setAttribute('data-vt-ex-stamp', '1');
+      box.style.cssText = EX_BOX + 'margin:8px 0 0;background:#e3f1e8;color:#1f5137;';
+      var h = document.createElement('div');
+      h.style.cssText = 'font-weight:700;font-size:19px;';
+      h.textContent = '✓ 今日運動完成';
+      box.appendChild(h);
+      var cfg = EX_WEEK[v._vtExSession] || {};
+      if (cfg.recapCues) {
+        var t = document.createElement('div');
+        t.textContent = '呢幾週你練過：';
+        box.appendChild(t);
+        cfg.recapCues.forEach(function (n) {
+          if (!EX_WEEK[n] || !EX_WEEK[n].cue) return;
+          var li = document.createElement('div');
+          li.textContent = '· ' + EX_WEEK[n].cue;
+          box.appendChild(li);
+        });
+      }
+      v.parentNode.insertBefore(box, v.nextSibling);
+    }
+
+    // ── 3. Earlier picks from UserInputTable (sessions 5 and 7) ──
+    // Botpress logs "Video Choice ( <placement> )" = " 1" / " 2" on every pick.
+    // Newest first; the first row seen per session is the latest pick.
+    var _exChoiceCache = {};
+    function exUid() { return String(currentUserId || '').trim().toLowerCase(); }
+    function exFetchChoices(cb) {
+      var uid = exUid();
+      if (!uid || uid === 'unknown') { cb(null); return; }
+      if (_exChoiceCache[uid]) { cb(_exChoiceCache[uid]); return; }
+      var esc = uid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      fetch('https://api.botpress.cloud/v1/tables/' + TABLE + '/rows/find', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + PAT, 'x-bot-id': BOT_ID, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          limit: 200,
+          filter: { UserId: { $regex: '^\\s*' + esc + '\\s*$', $options: 'i' },
+                    VariableName: { $regex: '^Video Choice' } },
+          orderBy: 'createdAt', orderDirection: 'desc'
+        })
+      }).then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          var by = {};
+          ((d && d.rows) || []).forEach(function (row) {
+            var s = parseInt(row.Session, 10);
+            var v = String(row.VariableValue || '').trim();
+            if (!isNaN(s) && (v === '1' || v === '2') && !(s in by)) by[s] = v;
+          });
+          _exChoiceCache[uid] = by;
+          console.log('[VideoTrack] earlier exercise picks:', JSON.stringify(by));
+          cb(by);
+        })
+        .catch(function (e) { console.warn('[VideoTrack] pick history unavailable:', e && e.message); cb(null); });
+    }
+    function exRememberPick(v) {
+      var w = exWeek(), uid = exUid();
+      if (!w || !uid) return;
+      (_exChoiceCache[uid] = _exChoiceCache[uid] || {})[w.s] = String(v);
+    }
+    function exNote(wrap, text) {
+      var n = document.createElement('div');
+      n.setAttribute('data-vt-ex-note', '1');
+      n.style.cssText = EX_BOX + 'margin:0 0 10px;';
+      n.textContent = text;
+      wrap.insertBefore(n, wrap.firstChild);
+      scrollChatToBottomSoon();
+    }
+    function exEnhancePick(wrap) {
+      var w = exWeek();
+      if (!w || !wrap) return;
+      if (!w.cfg.suggestOther && !w.cfg.recap) return;
+      exFetchChoices(function (by) {
+        if (!by || !wrap.isConnected || wrap._done) return;
+        if (w.cfg.suggestOther) {
+          var last = by[w.s - 1];
+          if (!last) return;
+          var other = last === '1' ? '2' : '1';
+          var b = wrap.querySelector('button[data-vt-value="' + last + '"]');
+          if (b) {
+            var tag = document.createElement('span');
+            tag.textContent = '上週做過';
+            tag.style.cssText = 'display:inline-block;margin:0 0 0 6px;padding:2px 8px;border-radius:999px;' +
+                                'background:#fff;color:#55645d;font-size:14px;line-height:18px;vertical-align:middle;';
+            b.appendChild(tag);
+          }
+          exNote(wrap, '上週你做咗' + EX_PART_NAME[last] + '，今次試下' + EX_PART_NAME[other] + '？');
+        }
+        if (w.cfg.recap) {
+          var parts = w.cfg.recap.map(function (n) {
+            return '第' + n + '節 ' + (by[n] ? EX_PART_NAME[by[n]] + ' ✓' : '—');
+          });
+          if (w.cfg.recap.some(function (n) { return by[n]; })) {
+            exNote(wrap, '你之前嘅運動：' + parts.join(' · '));
+          }
+        }
+      });
     }
 
     // ── Session-menu widget ──────────────────────────────────
@@ -2457,6 +2731,15 @@
     // pick. Override in the marker with endvalue=… / endlabel=… if needed.
     var MENU_END_VALUE = 0;
     var MENU_END_LABEL = '結束本週課程';
+    //   placement=weekend   — the 0928 end-of-lesson menu (emon, 2026-10-04), shown
+    //                        again after every loop:
+    //                          重溫本週課程      → sends N   (replay the lesson just done)
+    //                          靜觀運動課後練習  → sends 100+N (Studio branches on >= 100)
+    //                          開始新課程        → sends finished+1, greyed when not open
+    //                        N = done= in the marker, else the last __session__ seen.
+    var MENU_PRACTICE_OFFSET = 100;
+    var _menuWeekSession = 0;   // this week's session, from the last placement=start marker
+    var MENU_MAX_SESSION = 8;
     function parseSessionMenu(spec) {
       var p = {};
       spec.split(/[;,]/).forEach(function (kv) {
@@ -2485,7 +2768,24 @@
       var oldGroup = gOld.length ? { header: '🎒 溫習舊內容：', items: gOld } : null;
 
       var groups = [];
-      if (place === 'whatnext') {
+      // Remember this week's session from the START menu (Real_User_logic, known good).
+      if (place === 'start' && current >= 1) _menuWeekSession = current;
+      if (place === 'weekend') {
+        var nxt  = fin + 1;
+        // Safety net: the end-of-lesson Verify code once computed by DAY and sent -1.
+        // If the end marker's week is missing/smaller than the start menu's, trust the start menu.
+        var week = current;
+        if (_menuWeekSession && (week < 1 || week < _menuWeekSession)) week = _menuWeekSession;
+        var open = (nxt <= week && nxt <= MENU_MAX_SESSION);
+        var done = p.done || parseInt(currentSession, 10) || (current >= 1 ? current : 0) || fin || 1;
+        console.log('[VideoTrack] Weekend menu: current=' + current + ' (start menu said ' + (_menuWeekSession || '?') +
+                    ', using ' + week + ') finished=' + fin + ' done=' + done + ' → 開始新課程 第' + nxt + '節 ' + (open ? 'OPEN' : 'greyed'));
+        groups.push({ kind: 'weekend', header: '', items: [
+          { num: done, label: '重溫本週課程', on: true },
+          { num: MENU_PRACTICE_OFFSET + done, label: '靜觀運動課後練習', on: true, hideSent: true },
+          { num: nxt, label: open ? ('開始新課程（第 ' + nxt + ' 節）') : '開始新課程（未開放）', on: open }
+        ] });
+      } else if (place === 'whatnext') {
         // Order follows what someone who JUST FINISHED a lesson most likely
         // wants: leave → revise something → (rarely) start another lesson today.
         // The end option is the recommended action, so it gets the visual
@@ -2540,6 +2840,41 @@
       groups.forEach(function (g) {
         var group = document.createElement('div');
         group.style.cssText = 'margin-bottom:16px;';
+
+        // ── the 0928 three-option menu (placement=weekend) ──
+        // Options side by side, same native pill style. Re-shown after every loop.
+        if (g.kind === 'weekend') {
+          var col = document.createElement('div');
+          // Side by side (emon, 2026-10-05); wraps onto a second line on a narrow phone.
+          col.style.cssText = 'display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-start;gap:10px;';
+          g.items.forEach(function (it) {
+            var wb = document.createElement('button');
+            wb.type = 'button';
+            wb.textContent = it.label;
+            if (!it.on) {
+              wb.disabled = true;
+              wb.style.cssText = BASE + DIS;
+            } else {
+              wb.style.cssText = BASE + ENA;
+              wb.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (wrap._done) return; wrap._done = true;
+                // Remember WHEN it was answered (row count), so the same marker
+                // text arriving again after the next loop can show the menu again.
+                if (_menuKey) _menuAnswered[_menuKey] = incomingRowCount() + 1;
+                wb.style.cssText = BASE + SEL;
+                sendChoice(String(it.num));
+                if (it.hideSent) hideOutgoingBubble(String(it.num));   // never show "104"
+                console.log('[VideoTrack] Session menu answered:', String(it.num), '(' + it.label + ')');
+                setTimeout(hidePainScale, 220);
+              });
+            }
+            col.appendChild(wb);
+          });
+          group.appendChild(col);
+          wrap.appendChild(group);
+          return;
+        }
 
         // ── the 結束本週課程 block (placement=whatnext only) ──
         if (g.kind === 'end') {
@@ -2625,6 +2960,28 @@
     }
     var _menuKey = '';
     var _menuAnswered = {};
+    function isNewestSessionMenu(key) {
+      var sr = bpShadowRoot();
+      if (!sr) {   // bpShadowRoot() throttles misses — do one direct look before giving up
+        var els = document.querySelectorAll('#bp-embedded *');
+        for (var k = 0; k < els.length && !sr; k++) {
+          if (els[k].shadowRoot && els[k].shadowRoot.querySelector('.bpMessageContainer')) sr = els[k].shadowRoot;
+        }
+      }
+      if (!sr) return true;
+      var rows = sr.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+      for (var i = rows.length - 1; i >= 0; i--) {
+        var t = (rows[i].textContent || '').replace(/\s+/g, '');
+        var at = t.toLowerCase().indexOf('sessionmenu:');
+        if (at < 0) continue;
+        return t.slice(at + 12).replace(/_+$/, '').indexOf(key) === 0;
+      }
+      return true;   // marker not in the DOM (live message-event path) → allow
+    }
+    function incomingRowCount() {
+      var sr = bpShadowRoot();
+      return sr ? sr.querySelectorAll('.bpMessageContainer[data-direction="incoming"]').length : 0;
+    }
     // A marker only describes the CURRENT step. After a reload the whole
     // transcript is replayed, so an ancient marker would resurrect its widget —
     // observed live: a sessionmenu marker sitting at row 2 of 46 redrew the
@@ -2635,6 +2992,15 @@
     // Rule: only render a marker's widget if that marker is among the last few
     // bot messages. Unknown (marker not in the DOM) → allow, so the live
     // message-event path is unaffected.
+    // The live message event can fire BEFORE Botpress draws the marker's row. On a
+    // second lesson in the same conversation markerIsCurrent() then finds the OLD
+    // row of the same marker far back and refuses (seen 2026-10-05: pain scale
+    // "87 messages back" on the 2nd loop). Re-check a few times before giving up.
+    function whenMarkerCurrent(prefix, fn, _try) {
+      _try = _try || 0;
+      if (markerIsCurrent(prefix)) { fn(); return; }
+      if (_try < 4) setTimeout(function () { whenMarkerCurrent(prefix, fn, _try + 1); }, [400, 1000, 2000, 4000][_try]);
+    }
     function markerIsCurrent(prefix, maxBack) {
       var s = bpShadowRoot();
       if (!s) return true;
@@ -2654,14 +3020,37 @@
       return true;
     }
 
-    function showSessionMenu(groups, key) {
+    function showSessionMenu(groups, key, _try) {
       if (!groups || !groups.length) return;
       key = key || '';
+      _try = _try || 0;
+      // The live message event can arrive BEFORE Botpress has drawn the marker's
+      // row, so the DOM checks below only see an OLDER marker and refuse (seen
+      // 2026-10-05: weekend menu never appeared, "88 messages back"). Re-check a
+      // few times; by then the row exists and the checks pass.
+      function retryLater() {
+        if (_try < 4) setTimeout(function () { showSessionMenu(groups, key, _try + 1); }, [400, 1000, 2000, 4000][_try]);
+      }
       // Re-appears on re-trigger while UNANSWERED (the marker lingers in the DOM
       // and the observer re-fires), but once the user taps a session it stays
       // hidden — the click handler records the key in _menuAnswered.
-      if (key && _menuAnswered[key]) return;
-      if (!markerIsCurrent('sessionmenu:')) return;   // replayed history, not the live step
+      if (key && _menuAnswered[key]) {
+        // weekend menu stores the row count at answer time: a NEW copy of the same
+        // marker (after a 重溫 / 課後練習 loop) comes after more messages → allow.
+        var ans = _menuAnswered[key];
+        if (typeof ans === 'number' && incomingRowCount() > ans + 1) delete _menuAnswered[key];
+        else return;
+      }
+      if (!markerIsCurrent('sessionmenu:')) { retryLater(); return; }   // replayed history, or row not drawn yet
+      // markerIsCurrent only checks that SOME sessionmenu marker is recent. An old
+      // placement=start marker re-rendered by Botpress would pass because the newer
+      // weekend marker is recent — and redraw the start picker mid-loop (seen
+      // 2026-10-05 after 重溫本週課程). Only draw the menu the NEWEST marker describes.
+      if (key && !isNewestSessionMenu(key)) {
+        console.log('[VideoTrack] older session-menu marker ignored:', key, '(check ' + (_try + 1) + ')');
+        retryLater();
+        return;
+      }
       if (_painScaleEl && _menuKey && _menuKey === key) return;   // already showing this exact menu
       hidePainScale();
       _menuKey = key;
