@@ -2099,8 +2099,18 @@
     (function wireStartButton() {
       var b = startBtnEl();
       if (!b) return;
-      b.addEventListener('click', function () {
+      b.addEventListener('click', function (e) {
         _startClickedAt = Date.now();
+        // Unlock read-aloud INSIDE this tap, before anything else can run.
+        // 開始 is the one gesture every participant makes on every mobile
+        // session, so it is the reliable place to unlock the speech engine;
+        // the generic document-level priming listener depends on event order
+        // and on ttsInit() having run, so it is a fallback, not the plan.
+        // (iOS/Android refuse speak() until one utterance has run inside a real
+        // gesture — see ttsPrime.)
+        if (!e || e.isTrusted !== false) {
+          try { _ttsPrimed = false; ttsPrime(); } catch (err) {}
+        }
         hidePainScale();   // clear any stale widget left from a prior conversation
         hideStartButton();
         try {
@@ -3624,7 +3634,27 @@
       _ttsQueue    = [];
       _ttsMsgQueue = [];
       _ttsBusy     = false;
-      try { _synth && _synth.cancel(); } catch (e) {}
+      // ⚠️ THE MOBILE AUTOPLAY BUG (fixed 2026-10-06). Do NOT cancel() while
+      // the priming utterance is still in flight.
+      //
+      // One tap on 開始 did two things: our capture-phase pointerdown handler
+      // primed the engine, and the click handler called
+      // botpress.sendMessage('開始') — which makes Botpress fire `messageSent`,
+      // whose handler calls ttsStop(). So cancel() landed on the priming
+      // utterance milliseconds after it was queued, every single time. onstart
+      // never fired, _ttsSpoke stayed false, and on iOS/Android the engine was
+      // therefore never unlocked — the opening messages went into a locked
+      // engine and nothing was spoken. Desktop has no user-activation
+      // requirement, which is why desktop was always fine.
+      //
+      // While an unproven prime is in flight, drop the queues (above) but leave
+      // the engine alone. Nothing is worth cancelling anyway: the only thing in
+      // it is one inaudible priming character.
+      if (ttsPrimingInFlight()) {
+        console.log('[VideoTrack][TTS] stop requested while priming — not cancelling (mobile unlock in flight)');
+      } else {
+        try { _synth && _synth.cancel(); } catch (e) {}
+      }
       ttsKeepAliveStop();
       ttsScrollEnd();
       // Stopped by a user send or a clip — the user's attention has moved, so
@@ -3655,13 +3685,27 @@
     // read-aloud was silent on iPhone/iPad while the webchat's chime worked
     // fine (that's an <audio> element, unlocked by different rules). A single
     // space at normal volume is inaudible but does unlock the engine.
+    //
+    // 2026-10-06: the priming text is no longer a single space. WebKit can
+    // accept a whitespace-only utterance and then never start it — no onstart,
+    // so _ttsSpoke stayed false and we could not tell an unlocked engine from a
+    // locked one. A real character always produces onstart. "，" is the
+    // quietest real token available: a lone comma is spoken as a brief pause,
+    // not a word.
+    var TTS_PRIME_TEXT    = '，';
+    var TTS_PRIME_GRACE_MS = 2000;  // how long a queued prime counts as "in flight"
     var _ttsPrimeAt = 0;      // when the last priming utterance was queued
+    // True while a prime has been queued but has not yet proven the engine is
+    // live. ttsStop() must not cancel() during this window — see ttsStop().
+    function ttsPrimingInFlight() {
+      return !_ttsSpoke && !!_ttsPrimeAt && (Date.now() - _ttsPrimeAt) < TTS_PRIME_GRACE_MS;
+    }
     function ttsPrime() {
       if (_ttsPrimed || !_ttsSupported) return;
       _ttsPrimed = true;
       _ttsPrimeAt = Date.now();
       try {
-        var u = new SpeechSynthesisUtterance(' ');
+        var u = new SpeechSynthesisUtterance(TTS_PRIME_TEXT);
         u.volume = 1;
         u.rate   = 1;
         if (_ttsVoice) { u.voice = _ttsVoice; u.lang = _ttsVoice.lang; }
@@ -3819,13 +3863,19 @@
     // We stop re-priming as soon as an `onstart` proves the engine is live.
     function ttsWireGesturePriming() {
       var _lastGestureAt = 0;
-      function onGesture() {
+      function onGesture(e) {
         if (_ttsSpoke) {                       // proven working — stop listening
           document.removeEventListener('pointerdown', onGesture, true);
           document.removeEventListener('touchend', onGesture, true);
           document.removeEventListener('click', onGesture, true);
           return;
         }
+        // Only a REAL tap carries user activation. ttsApplyInitialUnmute()
+        // calls btn.click() on Botpress's speaker, which bubbles here as a
+        // synthetic click: priming on it burns the one attempt (the engine
+        // rejects a speak() with no activation) AND sets _lastGestureAt, so a
+        // genuine tap arriving within 800ms was then ignored outright.
+        if (e && e.isTrusted === false) return;
         // ⚠️ ONE tap on a touch screen fires pointerdown, touchend AND click.
         // Priming on each of them queued THREE blank utterances per tap, every
         // tap, for as long as the engine looked locked. Desktop and Android
