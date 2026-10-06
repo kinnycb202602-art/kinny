@@ -2813,7 +2813,18 @@
         // thing, "where do I go now", not a wall of past lessons to re-read.
         // Revision still appears under placement=whatnext, which is where
         // someone who has just finished is actually looking for it.
+        //
+        // ⚠️ FALLBACK (2026-10-06). Dropping the revision group is right only
+        // while there IS something else to show. Once finished >= current —
+        // the participant has completed this week's lesson and comes back the
+        // same week — the 🚀 group is empty too, so the rule produced ZERO
+        // buttons: "今天想從哪裡開始呢？" with nothing under it and the
+        // composer still locked by the menu, i.e. a dead end with no way out.
+        // (Not reachable when finished === 0: Main/Standard15 branches away
+        // before emitting the marker.) So keep the rule, but never let it
+        // render an empty menu — fall back to the revision list.
         if (newGroup) groups.push(newGroup);
+        else if (oldGroup) groups.push(oldGroup);
       }
       console.log('[VideoTrack] Session menu placement:', place,
                   '| groups:', groups.map(function (g) { return g.kind || g.header; }).join(' / '));
@@ -3686,19 +3697,41 @@
     // fine (that's an <audio> element, unlocked by different rules). A single
     // space at normal volume is inaudible but does unlock the engine.
     //
-    // 2026-10-06: the priming text is no longer a single space. WebKit can
-    // accept a whitespace-only utterance and then never start it — no onstart,
-    // so _ttsSpoke stayed false and we could not tell an unlocked engine from a
-    // locked one. A real character always produces onstart. "，" is the
-    // quietest real token available: a lone comma is spoken as a brief pause,
-    // not a word.
-    var TTS_PRIME_TEXT    = '，';
-    var TTS_PRIME_GRACE_MS = 2000;  // how long a queued prime counts as "in flight"
+    // ⚠️ THE PRIMING TEXT MUST BE A SPACE. Do not put a punctuation mark here.
+    //
+    // 2026-10-06, first attempt: changed to "，" on the theory that a lone
+    // comma is spoken as a brief pause, so it would both be inaudible AND
+    // always fire onstart (whitespace sometimes does not). WRONG — the
+    // Cantonese engine reads a standalone comma out as its NAME, "逗號", so
+    // every participant heard "逗號" the moment they tapped 開始. Reverted the
+    // same day. Any real character risks the same thing; a space does not.
+    var TTS_PRIME_TEXT    = ' ';
+    var TTS_PRIME_GRACE_MS = 1200;  // how long a queued prime counts as "in flight"
     var _ttsPrimeAt = 0;      // when the last priming utterance was queued
+    var _ttsPrimeProbe = null;
     // True while a prime has been queued but has not yet proven the engine is
     // live. ttsStop() must not cancel() during this window — see ttsStop().
+    // Kept short: while it is true, a real stop (user send, clip starting) does
+    // not cut speech off, so the window must not outlast the prime itself.
     function ttsPrimingInFlight() {
       return !_ttsSpoke && !!_ttsPrimeAt && (Date.now() - _ttsPrimeAt) < TTS_PRIME_GRACE_MS;
+    }
+    // A whitespace utterance does not reliably fire onstart, so onstart alone
+    // cannot tell "unlocked" from "locked". Poll instead: on an UNLOCKED engine
+    // the queued prime makes speaking/pending go true for a moment; on a locked
+    // one speak() is a no-op and neither ever does. Either signal proves it.
+    function ttsPrimeProbe() {
+      if (_ttsPrimeProbe) clearInterval(_ttsPrimeProbe);
+      var until = Date.now() + 1000;
+      _ttsPrimeProbe = setInterval(function () {
+        if (_ttsSpoke || Date.now() > until) { clearInterval(_ttsPrimeProbe); _ttsPrimeProbe = null; return; }
+        try {
+          if (_synth && (_synth.speaking || _synth.pending)) {
+            _ttsSpoke = true;
+            console.log('[VideoTrack][TTS] engine accepted the prime — unlocked');
+          }
+        } catch (e) {}
+      }, 60);
     }
     function ttsPrime() {
       if (_ttsPrimed || !_ttsSupported) return;
@@ -3721,6 +3754,7 @@
           }
         };
         _synth.speak(u);
+        ttsPrimeProbe();       // whitespace may never fire onstart — watch the engine instead
         console.log('[VideoTrack][TTS] primed inside a user gesture');
       } catch (e) {
         _ttsPrimed = false;    // let the next gesture try again
