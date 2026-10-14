@@ -2744,10 +2744,17 @@
     //   placement=weekend   — the 0928 end-of-lesson menu (emon, 2026-10-04), shown
     //                        again after every loop:
     //                          重溫本週課程      → sends N   (replay the lesson just done)
-    //                          靜觀運動課後練習  → sends 100+N (Studio branches on >= 100)
+    //                          運動課後練習      → sends 100+N (Studio branches on >= 100)
     //                          開始新課程        → sends finished+1, greyed when not open
     //                        N = done= in the marker, else the last __session__ seen.
     var MENU_PRACTICE_OFFSET = 100;
+    // Week 1 is plain exercise — the mindfulness strand only starts in week 2, and week 1
+    // has its own 運動 video set — so its practice button must not say 靜觀.
+    // (user feedback, 2026-10-14). Every other week keeps the original wording.
+    // Number() because `done` can arrive as the string "1" from the marker.
+    function menuPracticeLabel(week) {
+      return (Number(week) === 1) ? '運動課後練習' : '靜觀運動課後練習';
+    }
     var _menuWeekSession = 0;   // this week's session, from the last placement=start marker
     var MENU_MAX_SESSION = 8;
     function parseSessionMenu(spec) {
@@ -2792,7 +2799,7 @@
                     ', using ' + week + ') finished=' + fin + ' done=' + done + ' → 開始新課程 第' + nxt + '節 ' + (open ? 'OPEN' : 'greyed'));
         groups.push({ kind: 'weekend', header: '', items: [
           { num: done, label: '重溫本週課程', on: true },
-          { num: MENU_PRACTICE_OFFSET + done, label: '靜觀運動課後練習', on: true, hideSent: true },
+          { num: MENU_PRACTICE_OFFSET + done, label: menuPracticeLabel(done), on: true, hideSent: true },
           { num: nxt, label: open ? ('開始新課程（第 ' + nxt + ' 節）') : '開始新課程（未開放）', on: open }
         ] });
       } else if (place === 'whatnext') {
