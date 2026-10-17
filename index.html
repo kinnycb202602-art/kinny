@@ -4114,6 +4114,10 @@
       // Muting routes through ttsStop() to here. Tapping the speaker is not a
       // request to move the view, so swallow the catch-up scroll.
       if (ttsScrollMuted()) return;
+      // And never drag a reader who has scrolled up: read-aloud finishing is
+      // not something they asked for. Only the reader's own actions (tapping
+      // the pill, sending, dismissing the popup) may move them.
+      if (!_stick) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -4134,6 +4138,10 @@
       // The tail of the burst (a video card, a choice widget) often isn't a
       // spoken message, so there may have been no suppressed pin to replay —
       // but it still needs to be brought into view.
+      if (!_stick) {
+        console.log('[VideoTrack][TTS] burst finished — reader is up the page, not moving');
+        return;
+      }
       console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
