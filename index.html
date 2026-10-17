@@ -124,28 +124,28 @@
       right: 16px;
       top: 0;                /* placeJumpBtn() measures this off the composer */
       bottom: auto;
-      height: 48px;
+      /* Back to a compact circle (emon, 2026-10-18): the labelled pill took up
+         too much of a phone screen. It only ever appears when something is
+         actually waiting, so the words are no longer carrying their weight —
+         the count does that. */
+      width: 54px;
+      height: 54px;
       box-sizing: border-box;
       display: none;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      padding: 0 16px 0 12px;
+      padding: 0;
       margin: 0;
       border: 2px solid #fff;
-      border-radius: 26px;
+      border-radius: 50%;
       background: #2f7d63;
       color: #fff;
-      font: 600 17px/1 -apple-system, BlinkMacSystemFont, 'PingFang HK', 'Noto Sans HK', sans-serif;
       cursor: pointer;
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
       -webkit-tap-highlight-color: transparent;
     }
-    #vt-jump svg { width: 22px; height: 22px; display: block; flex: 0 0 auto; }
-    #vt-jump-label { white-space: nowrap; }
-    /* One gentle bounce when it appears — an arrow alone is not obvious to an
-       elderly reader, so the pill carries words and a small movement to catch
-       the eye once, then sits still. */
+    #vt-jump svg { width: 26px; height: 26px; display: block; }
+    /* One gentle bounce when it appears, to catch the eye once. */
     @keyframes vt-jump-in {
       0%   { transform: translateY(10px); opacity: 0; }
       60%  { transform: translateY(-3px); opacity: 1; }
@@ -1854,7 +1854,6 @@
           '<path d="M12 4v14m0 0l-6-6m6 6l6-6" fill="none" stroke="#fff" ' +
           'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
-        '<span id="vt-jump-label">有新訊息</span>' +
         '<span id="vt-unread" aria-live="polite"></span>';
       btn.addEventListener('click', function (e) {
         // Stop Botpress's own list handlers from seeing this click at all.
@@ -1943,7 +1942,6 @@
       try {
         var btn = ensureJumpBtn();
         if (!btn) return;
-        var gap   = chatGapBelow();
         var quiet = (Date.now() - _lastMsgAt) >= QUIET_MS;
         // Never over the welcome screen, a confirm popup, or fullscreen video.
         // Also hidden whenever the 開始 button is on screen: _convStarted is a
@@ -1959,14 +1957,15 @@
                       (typeof _convStarted !== 'undefined' && !_convStarted) ||
                       (typeof popupOpen === 'function' && popupOpen()) ||
                       (typeof _vfs !== 'undefined' && !!_vfs);
-        // Hysteresis: once visible it takes a much smaller gap to stay.
-        var want  = blocked ? false
-                  : _jumpVis ? (gap > HIDE_PX)
-                             : (quiet && (gap > SHOW_PX || _unread > 0));
+        // Shown ONLY when something new is actually waiting (emon, 2026-10-18).
+        // It used to appear for any content below the fold, labelled 回到最新
+        // with no number — and that reads the same as 有新訊息 1, so it was
+        // noise. A reader who scrolls up by themselves knows where they are
+        // and can scroll back; the button now means one thing only: "there
+        // are N messages you have not seen". The quiet gate still keeps it
+        // from flickering while Kinny is mid-burst.
+        var want = blocked ? false : (_unread > 0 && (quiet || _jumpVis));
         setJumpVisible(want);
-        var lab = btn.querySelector('#vt-jump-label');
-        var want2 = _unread > 0 ? '有新訊息' : '回到最新';
-        if (lab && lab.textContent !== want2) lab.textContent = want2;
         var b = btn.querySelector('#vt-unread');
         if (!b) return;
         var txt  = _unread > 99 ? '99+' : String(_unread);
@@ -2211,6 +2210,9 @@
         // styles live in the DOCUMENT stylesheet, not here: the button had to
         // move out of the shadow root to clear the image/video buttons.
         '.bpMessageListScrollDownButton{display:none!important;}' +
+        // The band behind the sentence read-aloud is speaking.
+        '.vt-tts-hl{background:#fff2b0!important;border-radius:4px!important;' +
+          'box-shadow:0 0 0 2px #fff2b0!important;}' +
         // Room at the foot of the transcript for the jump pill, so the newest
         // message can never end up sitting underneath it (emon, 2026-10-17).
         '.bpMessageListViewport{padding-bottom:72px!important;}' +
@@ -4394,6 +4396,55 @@
     // exactly the "reads ~30 characters then goes quiet" symptom. The engine's
     // own queue is dependable, so we let it do the sequencing and use the
     // events only for scroll timing.
+    // ── Highlight the sentence being spoken ─────────────────
+    // (emon, 2026-10-18) Read-aloud moved the view to follow the voice but
+    // gave the eye nothing to hold on to. A pale band behind the chunk being
+    // spoken lets the reader see where Kinny is — which matters most for the
+    // people this is built for.
+    //
+    // Deliberately a plain <span> wrapped round the matching text, removed
+    // again as soon as the next chunk starts: no caret, no animation, no
+    // per-word tracking. If the spoken text cannot be located in the bubble
+    // (the sanitizer rewrites some messages) nothing is highlighted and
+    // reading carries on — never let a cosmetic touch break the speech.
+    var TTS_HL_ON = true;
+    var _hlEl = null;
+
+    function ttsClearHighlight() {
+      if (!_hlEl) return;
+      var el = _hlEl; _hlEl = null;
+      try {
+        var par = el.parentNode;
+        if (par) {
+          par.replaceChild(document.createTextNode(el.textContent), el);
+          par.normalize();
+        }
+      } catch (e) {}
+    }
+
+    function ttsHighlightChunk(chunk) {
+      try {
+        ttsClearHighlight();
+        if (!TTS_HL_ON || !_scRow || !chunk) return;
+        var needle = String(chunk).trim();
+        if (needle.length < 2) return;
+        var walker = document.createTreeWalker(_scRow, NodeFilter.SHOW_TEXT, null);
+        var node;
+        while ((node = walker.nextNode())) {
+          var idx = node.nodeValue.indexOf(needle);
+          if (idx < 0) continue;
+          var range = document.createRange();
+          range.setStart(node, idx);
+          range.setEnd(node, idx + needle.length);
+          var mark = document.createElement('span');
+          mark.className = 'vt-tts-hl';
+          range.surroundContents(mark);     // throws if the range crosses nodes
+          _hlEl = mark;
+          return;
+        }
+      } catch (e) { _hlEl = null; }
+    }
+
     function ttsPump() {
       if (!_ttsQueue.length) { ttsMessageDone(); return; }
       var chunks = _ttsQueue.slice();
@@ -4417,6 +4468,7 @@
             console.log('[VideoTrack][TTS] first utterance started — engine is live');
             setStatus('success', 'TTS speaking');
           }
+          ttsHighlightChunk(chunk);
           ttsScrollAdvance(chunk.length);
         };
         u.onend   = function () { if (i === lastIdx) ttsMessageDone(); };
@@ -4507,6 +4559,7 @@
         }
       } catch (e) {}
       ttsKeepAliveStop();
+      ttsClearHighlight();
       ttsScrollEnd();
       // A mute must not move the view EVER, including later: ttsMaybeEndSession()
       // fires right after this ('burst finished - releasing to the newest
@@ -4551,6 +4604,7 @@
         try { _synth && _synth.cancel(); } catch (e) {}
       }
       ttsKeepAliveStop();
+      ttsClearHighlight();
       ttsScrollEnd();
       // Stopped by a user send or a clip — the user's attention has moved, so
       // let the view jump to the bottom as it normally would.
