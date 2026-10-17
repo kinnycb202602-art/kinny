@@ -1542,26 +1542,25 @@
     // scroll; triggers one catch-up scroll after the reading finishes.
     var _scrollHeld = false;
 
-    // ── Pin-to-bottom: only when the reader is already at the bottom ──
+    // ── A new message NEVER moves the view ───────────────────
     // (emon, 2026-10-17) Users reported the screen "jumping" / losing focus.
-    // Kinny often sends an image, then text, then a video a second or two
-    // apart, and every arrival used to yank the view to the newest message —
-    // four times per message (see the delay list below). Someone still reading
-    // the first card was dragged away three more times.
+    // Kinny sends an image, then text, then a video a second or two apart, and
+    // every arrival used to yank the view to the newest message — four times
+    // per message. Someone still reading the first card was dragged away three
+    // more times.
     //
-    // Read-aloud listeners were already shielded (ttsHoldsScroll); this
-    // generalises the same protection to everyone. The view is pinned only when
-    // the reader is within STICK_PX of the bottom, i.e. following along live.
-    // If they have scrolled up to read, nothing moves, and Botpress's own grey
-    // "scroll to newest" circle is their way back — deliberately NOT replaced
-    // by a custom button (see the note in fixComposerInput), only enlarged.
+    // First attempt kept the pin for a reader who was already at the bottom.
+    // emon's call, same day: for elderly users that is still movement they did
+    // not ask for, and movement is the thing that confuses them. So the rule is
+    // now absolute — content arriving never scrolls anything. The reader keeps
+    // their exact position, and the only signal is Botpress's "scroll to
+    // newest" circle carrying a red unread count (deliberately Botpress's own
+    // button, decorated, not a second control of ours — see fixComposerInput).
     //
-    // force = true for the cases that MUST land at the bottom: the user just
-    // sent something, a widget was injected for them to tap, the idle popup was
-    // dismissed, or a read-aloud burst just finished.
-    var STICK_PX = 260;
-    var _stick = true;        // is the reader following the newest message?
-    var _stickEl = null;      // the scroll element the watcher is attached to
+    // force = true is reserved for movement the user themselves asked for:
+    // they sent a message, they dismissed the idle popup, or a read-aloud burst
+    // they switched on has finished. Nothing the BOT does is ever forced.
+    var _stickEl = null;      // the scroll element the scroll watcher is on
 
     function chatScrollEl() {
       var sr = bpShadowRoot();
@@ -1569,52 +1568,33 @@
              (sr && (sr.querySelector('.bpMessageListContainer') ||
                      sr.querySelector('.bpMessageListViewport'))) || null;
     }
-    function chatNearBottom(sc) {
-      if (!sc) return true;
-      return (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
-    }
-
-    // Whether the reader was at the bottom BEFORE the new content arrived.
-    //
-    // Measuring inside the mutation/message handler is too late and silently
-    // breaks follow-along: by then the new card has already grown scrollHeight,
-    // so the gap always reads as large and the view never follows, even for
-    // someone sitting at the bottom. (Caught on prod 2026-10-17 — a card
-    // arriving 120px from the bottom left the reader 564px behind.) The old
-    // code had the same flaw; it was masked because the message handler also
-    // pinned unconditionally.
-    //
-    // So the answer is remembered from the last real scroll instead. A scroll
-    // event fires whenever the position changes, including our own pinning;
-    // content growing underneath does not move the position, so the remembered
-    // value stays correct exactly when it matters.
     function wireStickWatcher() {
       var sc = chatScrollEl();
       if (!sc) return null;
       if (_stickEl !== sc) {
         _stickEl = sc;
-        _stick = true;        // a fresh list starts at the bottom
         sc.addEventListener('scroll', function () {
-          _stick = chatNearBottom(sc);
-          if (_stick) _unread = 0;
-          renderUnread();     // Botpress (re)creates the button on scroll
+          // Scrolling down past a waiting message marks it read, and Botpress
+          // (re)creates the circle from its own scroll handler, so this is also
+          // where a freshly created circle first gets its badge.
+          recountUnread();
         }, { passive: true });
       }
       return sc;
     }
 
     // ── Unread counter on the "回到最新" circle ─────────────
-    // (emon, 2026-10-17) Now that the view is not dragged to the bottom, a
-    // reader who stayed up needs to know how much has piled up below — so the
-    // circle carries a WhatsApp-style red count. It is still Botpress's own
-    // button, decorated, not a second control of ours: Botpress creates it
-    // whenever the list is off the bottom and removes it at the bottom, which
-    // is exactly when the count is zero anyway.
+    // Unread == message rows whose top is still below the visible area. Counted
+    // by measuring rather than by tallying arrivals, so a short message that
+    // happens to fit on screen is never reported as unread, and scrolling down
+    // past one clears it without any bookkeeping.
     //
     // renderUnread() MUST stay idempotent: it runs from a MutationObserver on
-    // the message list, and a write on every call would feed that observer
-    // back into itself (see the Page-Unresponsive loop of 2026-09).
-    var _unread = 0;
+    // the message list, and a write on every call would feed that observer back
+    // into itself (see the Page-Unresponsive loop of 2026-09).
+    var _unread  = 0;
+    var _pending = [];        // rows the reader has not scrolled down to yet
+    var _recountT = null;
 
     function renderUnread() {
       try {
@@ -1634,16 +1614,44 @@
         if (b.style.display !== disp) b.style.display = disp;
       } catch (e) {}
     }
-    function bumpUnread(n) {
-      if (!n) return;
-      _unread += n;
-      renderUnread();
+
+    function recountUnread() {
+      try {
+        var sc = chatScrollEl();
+        if (!sc) return;
+        var edge = sc.getBoundingClientRect().bottom - 24;   // a sliver counts as seen
+        var n = 0, keep = [];
+        for (var i = 0; i < _pending.length; i++) {
+          var r = _pending[i];
+          if (!r || !r.isConnected) continue;
+          if (r.getBoundingClientRect().top > edge) { n++; keep.push(r); }
+        }
+        _pending = keep;
+        _unread  = n;
+        renderUnread();
+      } catch (e) {}
+    }
+    // Coalesced: a burst of mutations produces one measurement, after layout.
+    function scheduleRecount() {
+      if (_recountT) return;
+      _recountT = setTimeout(function () {
+        _recountT = null;
+        recountUnread();
+      }, 120);
       // Botpress creates the circle from its own scroll handler, which can run
-      // a beat after the message landed — most visibly during read-aloud,
-      // where the view is held still and no scroll of ours follows to retrigger
-      // the render. Two cheap idempotent retries cover that gap.
-      setTimeout(renderUnread, 250);
-      setTimeout(renderUnread, 900);
+      // a beat later — most visibly during read-aloud, where nothing of ours
+      // scrolls afterwards to retrigger the render. Two idempotent retries.
+      setTimeout(renderUnread, 350);
+      setTimeout(renderUnread, 1000);
+    }
+    function markPending(rows) {
+      for (var i = 0; i < rows.length; i++) _pending.push(rows[i]);
+      scheduleRecount();
+    }
+    function clearUnread() {
+      _pending = [];
+      _unread  = 0;
+      renderUnread();
     }
 
     function scrollChatToBottom(force) {
@@ -1656,22 +1664,23 @@
         return;
       }
       var sc = wireStickWatcher();
-      // Reader has scrolled up — leave them alone, and don't drag the painscale
-      // widget into view either.
-      if (!force && !_stick) return;
-      if (sc) { sc.scrollTop = sc.scrollHeight; _stick = true; _unread = 0; renderUnread(); }
+      // Not forced = content arrived on its own. The view does not move, full
+      // stop; the circle and its count are the whole notification.
+      if (!force) { scheduleRecount(); return; }
+      if (sc) sc.scrollTop = sc.scrollHeight;
+      clearUnread();
       // Also nudge the painscale widget into view if present.
       if (_painScaleEl && _painScaleEl.scrollIntoView) {
         try { _painScaleEl.scrollIntoView({ block: 'end' }); } catch (e) {}
       }
     }
-    // Scroll to bottom over a few frames so late-rendered content is caught.
-    // Two passes when merely following along: more than that reads as a stutter
-    // now that images and video cards reserve their height up front. The forced
-    // path keeps a third, later pass, because it must not miss.
+    // A forced scroll runs over a few frames so late-rendered content is still
+    // caught. The unforced call does not scroll at all, so one pass is enough —
+    // it only re-measures what is still below the fold.
     function scrollChatToBottomSoon(force) {
-      (force ? [0, 180, 520] : [0, 320]).forEach(function (d) {
-        setTimeout(function () { scrollChatToBottom(force); }, d);
+      if (!force) { scheduleRecount(); return; }
+      [0, 180, 520].forEach(function (d) {
+        setTimeout(function () { scrollChatToBottom(true); }, d);
       });
     }
     // Collapse the on-screen keyboard by blurring the composer input.
@@ -2359,31 +2368,21 @@
       if (sc) {
         wireStickWatcher();
         var mo = new MutationObserver(function (muts) {
-          // Count message rows that landed while the reader could not see them
-          // — that is what the red badge on the circle reports. Two cases:
-          //   • the reader scrolled up themselves (!_stick), and
-          //   • read-aloud is holding the view on the message being spoken,
-          //     where _stick may still read as true even though the view is
-          //     pinned in place and the new rows are off-screen below.
-          // Counted BEFORE the read-aloud early-return below, or a burst being
-          // read aloud would never be counted at all.
-          var ttsHeld = (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll());
-          if (!_stick || ttsHeld) {
-            var n = 0;
-            for (var i = 0; i < muts.length; i++) {
-              var added = muts[i].addedNodes;
-              for (var j = 0; j < added.length; j++) {
-                var el = added[j];
-                if (el.nodeType === 1 && el.classList &&
-                    el.classList.contains('bpMessageContainer')) n++;
-              }
+          // The view is NEVER pinned from here any more — a message arriving
+          // must not move an elderly reader's screen, whatever their scroll
+          // position and whether or not read-aloud is running. All this does is
+          // register the new rows so the circle can report how many are still
+          // below the fold.
+          var fresh = [];
+          for (var i = 0; i < muts.length; i++) {
+            var added = muts[i].addedNodes;
+            for (var j = 0; j < added.length; j++) {
+              var el = added[j];
+              if (el.nodeType === 1 && el.classList &&
+                  el.classList.contains('bpMessageContainer')) fresh.push(el);
             }
-            bumpUnread(n);
           }
-          // Read-aloud owns the scroll while it's speaking — don't pin.
-          if (ttsHeld) { _scrollHeld = true; return; }
-          // _stick, not a fresh measurement: see wireStickWatcher().
-          if (_stick) { sc.scrollTop = sc.scrollHeight; }
+          if (fresh.length) markPending(fresh);
         });
         mo.observe(sc, { childList: true, subtree: true });
       }
@@ -2558,7 +2557,10 @@
       }
       _psAttachTries = 0;
       if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
-      scrollChatToBottomSoon(true);   // a widget to tap — it has to be on screen
+      // NOT forced: the pain scale arrives with a bot message, and nothing the
+      // bot does may move the screen. The circle's count tells the reader
+      // something is waiting; tapping it brings them to the scale.
+      scrollChatToBottomSoon(false);
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
         _psObserver = new MutationObserver(function () {
