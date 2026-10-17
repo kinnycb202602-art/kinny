@@ -4153,7 +4153,10 @@
       // A call made inside a gesture therefore goes straight through. Nothing
       // was cancelled on that path, so the gap buys nothing anyway.
       if (item.now) {
-        try { if (_synth.paused) _synth.resume(); } catch (e) {}
+        // Unconditional resume, not `if (paused)`: WebKit can be left in a
+        // state where it ignores speak() while reporting paused === false,
+        // and a resume() on a running engine is harmless.
+        try { _synth.resume(); } catch (e) {}
         console.log('[VideoTrack][TTS] speaking inside the gesture — no deferral');
         ttsPump();
         return;
@@ -4246,6 +4249,35 @@
     // Stopping always DISCARDS. Whether it was a user message or a clip that
     // interrupted, the partly-read message is gone and nothing is replayed —
     // the user has moved on and re-hearing it would be noise.
+    // Silence for a MUTE, without the hostile cancel().
+    //
+    // (emon, 2026-10-17) The decisive clue: a fresh reload speaks fine on the
+    // phone, but once the user mutes, unmuting never brings speech back. So
+    // the engine is healthy until the mute — and what mute did was run
+    // ttsStop(), whose _synth.cancel() is a known way to WEDGE WebKit's
+    // speechSynthesis: afterwards speak() silently does nothing and only a
+    // page reload clears it. (This file already warns about exactly that a
+    // few lines down, for the priming path.)
+    //
+    // So a mute cancels only if something is actually being spoken, and
+    // immediately resumes — cancel() can also leave the engine paused, and a
+    // paused engine ignores every later speak().
+    function ttsSilenceForMute() {
+      _ttsCurrent  = '';
+      _ttsQueue    = [];
+      _ttsMsgQueue = [];
+      _ttsBusy     = false;
+      try {
+        if (_synth && (_synth.speaking || _synth.pending)) {
+          _synth.cancel();
+          try { _synth.resume(); } catch (e) {}
+        }
+      } catch (e) {}
+      ttsKeepAliveStop();
+      ttsScrollEnd();
+      console.log('[VideoTrack][TTS] muted — stopped without wedging the engine');
+    }
+
     function ttsStop() {
       _ttsCurrent  = '';
       _ttsQueue    = [];
@@ -4529,7 +4561,7 @@
       var cur = bpSoundIsOn();
       if (cur === null || cur === _ttsOn) return;
       _ttsOn = cur;
-      if (!_ttsOn) ttsStop();
+      if (!_ttsOn) ttsSilenceForMute();   // NOT ttsStop() — its cancel() wedges WebKit
       console.log('[VideoTrack][TTS] follows Botpress speaker →', _ttsOn ? 'ON (unmuted)' : 'OFF (muted)');
       // NOTE: unmuting does NOT speak from here. This runs on a 250ms poll,
       // which carries no user activation — iOS and Android refuse speak()
@@ -4550,6 +4582,9 @@
         if (!clean || clean.length < 2) return;
         _ttsScrollOff = true;          // cleared when the bot next sends something
         _ttsArmed = true;              // an explicit request outranks the arming window
+        // Clear any wedge a previous mute may have left behind before asking
+        // the engine for anything.
+        try { _synth.resume(); } catch (e) {}
         console.log('[VideoTrack][TTS] ' + why + ' — reading the latest message:', clean.slice(0, 40));
         // `true`: we are inside the speaker tap, so this must reach the engine
         // in the same tick — it is both the unlock and the first real speech.
