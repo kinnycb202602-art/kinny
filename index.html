@@ -1550,16 +1550,45 @@
     // sent something, a widget was injected for them to tap, the idle popup was
     // dismissed, or a read-aloud burst just finished.
     var STICK_PX = 260;
+    var _stick = true;        // is the reader following the newest message?
+    var _stickEl = null;      // the scroll element the watcher is attached to
 
-    function chatNearBottom(sc) {
-      if (!sc) return true;
-      return (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
-    }
     function chatScrollEl() {
       var sr = bpShadowRoot();
       return bpScrollEl(sr) ||
              (sr && (sr.querySelector('.bpMessageListContainer') ||
                      sr.querySelector('.bpMessageListViewport'))) || null;
+    }
+    function chatNearBottom(sc) {
+      if (!sc) return true;
+      return (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
+    }
+
+    // Whether the reader was at the bottom BEFORE the new content arrived.
+    //
+    // Measuring inside the mutation/message handler is too late and silently
+    // breaks follow-along: by then the new card has already grown scrollHeight,
+    // so the gap always reads as large and the view never follows, even for
+    // someone sitting at the bottom. (Caught on prod 2026-10-17 — a card
+    // arriving 120px from the bottom left the reader 564px behind.) The old
+    // code had the same flaw; it was masked because the message handler also
+    // pinned unconditionally.
+    //
+    // So the answer is remembered from the last real scroll instead. A scroll
+    // event fires whenever the position changes, including our own pinning;
+    // content growing underneath does not move the position, so the remembered
+    // value stays correct exactly when it matters.
+    function wireStickWatcher() {
+      var sc = chatScrollEl();
+      if (!sc) return null;
+      if (_stickEl !== sc) {
+        _stickEl = sc;
+        _stick = true;        // a fresh list starts at the bottom
+        sc.addEventListener('scroll', function () {
+          _stick = chatNearBottom(sc);
+        }, { passive: true });
+      }
+      return sc;
     }
 
     function scrollChatToBottom(force) {
@@ -1571,11 +1600,11 @@
         _scrollHeld = true;
         return;
       }
-      var sc = chatScrollEl();
+      var sc = wireStickWatcher();
       // Reader has scrolled up — leave them alone, and don't drag the painscale
       // widget into view either.
-      if (sc && !force && !chatNearBottom(sc)) return;
-      if (sc) sc.scrollTop = sc.scrollHeight;
+      if (!force && !_stick) return;
+      if (sc) { sc.scrollTop = sc.scrollHeight; _stick = true; }
       // Also nudge the painscale widget into view if present.
       if (_painScaleEl && _painScaleEl.scrollIntoView) {
         try { _painScaleEl.scrollIntoView({ block: 'end' }); } catch (e) {}
@@ -1668,9 +1697,12 @@
           'background:#2f7d63!important;color:#fff!important;opacity:1!important;' +
           'border:2px solid #fff!important;' +
           'box-shadow:0 6px 18px rgba(0,0,0,.28)!important;}' +
-        '.bpMessageListScrollDownButton svg{' +
+        // The arrow is not an <svg>: the button is empty and Botpress paints
+        // the glyph on ::after with a mask-image, tinted by background-color
+        // (grey #697383 by default — unreadable once the circle is green).
+        '.bpMessageListScrollDownButton::after{' +
           'width:26px!important;height:26px!important;' +
-          'stroke:#fff!important;fill:#fff!important;}' +
+          'background-color:#fff!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -2250,10 +2282,12 @@
       //    already near the bottom (don't yank them if they scrolled up to read).
       var sc = bpScrollEl(sr);
       if (sc) {
+        wireStickWatcher();
         var mo = new MutationObserver(function () {
           // Read-aloud owns the scroll while it's speaking — don't pin.
           if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) { _scrollHeld = true; return; }
-          if (chatNearBottom(sc)) sc.scrollTop = sc.scrollHeight;
+          // _stick, not a fresh measurement: see wireStickWatcher().
+          if (_stick) { sc.scrollTop = sc.scrollHeight; }
         });
         mo.observe(sc, { childList: true, subtree: true });
       }
