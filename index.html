@@ -4181,6 +4181,15 @@
         console.log('[VideoTrack][TTS] reading without scrolling — started by a speaker tap');
         return;
       }
+      // Whether to follow THIS message at all is decided here, once. If the
+      // reader has scrolled up to read something, read-aloud does not haul
+      // them down to the new message — the pill tells them it is waiting.
+      // Caught up, it follows the voice all the way through.
+      if (!_stick) {
+        _scAbort = true;
+        console.log('[VideoTrack][TTS] reading without scrolling — the reader is up the page');
+        return;
+      }
       ttsScrollJump(0);                 // land on the message before the voice starts
       ttsScrollLoopStart();
     }
@@ -4226,10 +4235,9 @@
             console.log('[VideoTrack][TTS] manual scroll — reader released for this message');
             return;
           }
-          // _scWant is a REMEMBERED position, and putting it back is what
-          // looked like "it jumps back to where it was before". Never do
-          // that to a reader who has scrolled up.
-          if (!_stick) { _scWant = sc.scrollTop; return; }
+          // Holding position between chunks is part of following a message
+          // we already decided to follow; the manual-scroll release above is
+          // what hands control back when the reader takes over.
           noteScroll('TTS hold loop');
           sc.scrollTop = _scWant;                 // programmatic jump — put it back
           _scWant = sc.scrollTop;
@@ -4287,12 +4295,12 @@
       var target = ttsScrollTarget(frac, sc);
       if (target === null) return;
       if (_scWant >= 0 && Math.abs(target - _scWant) < 2) return;   // already there
-      // Read-aloud may steer only while the reader is still at the bottom.
-      // Once they have scrolled up, nothing read-aloud does may move them —
-      // this is the same rule new messages follow. Traced on prod: with the
-      // reader parked 1300px up, 'TTS follows the reading' walked the view
-      // down 444px per message until it reached the end.
-      if (!_stick) return;
+      // NOTE: no _stick test here. Following the voice WITHIN a message is
+      // the whole point of read-aloud ("讀到邊 scroll 到邊"), and gating it on
+      // _stick is self-defeating anyway: the first jump lands the view on a
+      // message above the newest content, which makes _stick false and would
+      // stop the following for the rest of the burst. The decision of whether
+      // to follow a message AT ALL is taken once, in ttsScrollBegin.
       noteScroll('TTS follows the reading');
       sc.scrollTop = target;
       _scWant = sc.scrollTop;        // absorb any clamping the browser applies
