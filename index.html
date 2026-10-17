@@ -1702,8 +1702,14 @@
         // control for this job: it was hidden for a day in favour of a custom
         // green button and emon reverted that on 2026-09-01. Only its size and
         // contrast are changed here; no second button is added.
+        // display:flex + padding:0 is what centres the arrow. Botpress ships
+        // the button as display:block with padding:6px, which was fine at its
+        // own small size but left the glyph pinned to the top-left once the
+        // circle grew to 54px (emon, 2026-10-17).
         '.bpMessageListScrollDownButton{' +
           'width:54px!important;height:54px!important;min-width:54px!important;' +
+          'display:flex!important;align-items:center!important;' +
+          'justify-content:center!important;padding:0!important;' +
           'background:#2f7d63!important;color:#fff!important;opacity:1!important;' +
           'border:2px solid #fff!important;' +
           'box-shadow:0 6px 18px rgba(0,0,0,.28)!important;}' +
