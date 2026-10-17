@@ -3607,7 +3607,16 @@
 
     var _synth        = (typeof window !== 'undefined') && window.speechSynthesis;
     var _ttsSupported = !!(_synth && typeof window.SpeechSynthesisUtterance === 'function');
-    var _ttsOn        = false;
+    // Read-aloud is ON on EVERY load unless the user has explicitly muted it.
+    //
+    // It used to start false and wait for Botpress's speaker state to decide.
+    // Botpress comes back MUTED on a fresh page, so after any refresh — or
+    // simply opening the same link again — read-aloud was off, on every mobile
+    // browser (emon, 2026-10-17, iOS and Android). The speaker button's state
+    // at load time is not a choice anybody made, so it no longer decides this;
+    // only a tap by the user does, and that tap is what gets remembered.
+    // ttsSoundChoice() is defined further down with the rest of the sound code.
+    var _ttsOn        = true;
     var _ttsArmed     = false;   // false until the initial history replay is past
     var _ttsPrimed    = false;   // iOS needs one utterance inside a real user gesture
     var _ttsSpoke     = false;   // an utterance has actually STARTED — engine proven live
@@ -3792,8 +3801,22 @@
     // so this works even if the jump and the loop resolved different scroll
     // elements. The hold itself is NOT dropped — read-aloud keeps following
     // the spoken text from the new position.
+    // Tapping the jump button is the reader taking over, so read-aloud must
+    // stop steering — the SAME release a manual scroll gets a few lines below.
+    //
+    // Clearing _scWant alone was not enough and left the button looking like
+    // it jumped backwards (emon, 2026-10-17: "Mini button 都 trigger 到個 go
+    // 去上邊嘅某一個位置"). The hold loop re-seeds from the new position, yes,
+    // but ttsScrollJump() runs again on every progress tick and re-aims at the
+    // message being SPOKEN — which is behind where the reader just jumped to.
+    // So the view was dragged back up a moment after each tap.
     function ttsAdoptScroll() {
-      _scWant = -1;
+      _scWant  = -1;
+      _scAbort = true;          // hands off for the rest of this message
+      _ttsSession = false;
+      _scrollHeld = false;
+      try { ttsScrollEnd(); } catch (e) {}
+      console.log('[VideoTrack][TTS] reader jumped — read-aloud released the scroll');
     }
 
     // ── A speaker tap must not move the view ─────────────────
@@ -4376,6 +4399,15 @@
     // with the conversation and the NEXT session starts unmuted again — while
     // a mute chosen during a session still sticks across reloads.
     var TTS_SOUND_FLAG   = 'bp-webchat-vt-initial-sound';
+    // Support escape hatch: ?sound=on wipes a stored mute, for a phone that
+    // somehow ends up stuck silent. Nothing else to clear — everything the
+    // sound path remembers is this one key.
+    try {
+      if (new URLSearchParams(window.location.search).get('sound') === 'on') {
+        localStorage.removeItem(TTS_SOUND_FLAG);
+        console.log('[VideoTrack][TTS] ?sound=on — stored mute cleared');
+      }
+    } catch (e) {}
     var _ttsSoundSettled = false;  // true once the initial state is applied (or given up on)
     // ⚠️ Two hard rules, both learned the hard way (2026-09-01). This function
     // CLICKS Botpress's speaker button, and a stray click makes the speaker look
@@ -4402,7 +4434,12 @@
       // for the rest of that browser's life. What has to persist across a
       // reload is the user's CHOICE, not the fact that we once ran.
       try {
-        if (localStorage.getItem(TTS_SOUND_FLAG) === 'muted') { _ttsSoundSettled = true; return true; }
+        if (localStorage.getItem(TTS_SOUND_FLAG) === 'muted') {
+          _ttsOn = false;                 // their mute, honoured across reloads
+          _ttsSoundSettled = true;
+          console.log('[VideoTrack][TTS] staying muted — the user chose that earlier');
+          return true;
+        }
       } catch (e) {}
       var cur = bpSoundIsOn();
       if (cur === null) return false;                 // can't read state yet — retry
@@ -4426,8 +4463,11 @@
     // Botpress's speaker button is the MASTER switch — we only follow it.
     // Unmuted (sound on) → read-aloud on. Muted → silent, queue dropped.
     function ttsWatchSound() {
-      // Until the start-of-session sound state has landed, don't follow — a
-      // stale stored "muted" could otherwise stick before we clear it.
+      // Only follow the speaker once the USER has actually tapped it. Its
+      // state at load time is not a choice — Botpress simply comes back muted
+      // on a fresh page — and following that was what silenced read-aloud
+      // after every refresh.
+      if (!_ttsUserTouchedSound) return;
       if (!_ttsSoundSettled) return;
       var cur = bpSoundIsOn();
       if (cur === null || cur === _ttsOn) return;
@@ -5230,6 +5270,12 @@
         // through untouched, so the start-of-session unmute can never click
         // their choice back a moment later.
         if (isSoundControl(e.target, sr)) {
+          // ⚠️ ttsApplyInitialUnmute() calls btn.click() on this very button.
+          // That synthetic click lands here too, and without this guard it was
+          // recorded as "the user has chosen" — then the 300ms readback below
+          // could store 'muted' and silence read-aloud on every future load,
+          // permanently. Only a real finger counts (emon, 2026-10-17).
+          if (e && e.isTrusted === false) return;
           // Sound is sound — it must not move the view. See soundTapJustHappened().
           _soundTapAt = Date.now();
           if (!_ttsUserTouchedSound) {
