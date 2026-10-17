@@ -1649,6 +1649,30 @@
              sr.querySelector('.bpMessageListViewport') || null;
     }
 
+    // Attach the scroll listener once per scroll element. This is where
+    // _stick is kept honest: read from a real scroll, never measured at the
+    // moment a message lands (by then the new card has already grown the
+    // list, so it would always read "far from the bottom").
+    function wireStickWatcher() {
+      var sc = chatScrollEl();
+      if (!sc) return null;
+      if (_stickEl !== sc) {
+        _stickEl = sc;
+        sc.addEventListener('scroll', function () {
+          var nowTop = Math.round(sc.scrollTop);
+          if (_scrollLast >= 0 && Math.abs(nowTop - _scrollLast) > 80) {
+            console.log('[VideoTrack][SCROLL] ' + _scrollLast + ' -> ' + nowTop +
+                        '  by: ' + _scrollWhy +
+                        ' (' + (Date.now() - _scrollWhyAt) + 'ms ago)');
+          }
+          _scrollLast = nowTop;
+          _stick = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
+          recountUnread();
+        }, { passive: true });
+      }
+      return sc;
+    }
+
     // ── Who moved the view? ──────────────────────────────────
     // (emon, 2026-10-17) The chat still scrolls on a speaker tap, and guessing
     // has cost enough time. Every place WE set scrollTop stamps a reason here,
