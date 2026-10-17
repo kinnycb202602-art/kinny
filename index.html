@@ -4273,32 +4273,29 @@
       _ttsBusy     = false;
       try {
         if (_synth && (_synth.speaking || _synth.pending)) {
-          if (IS_IOS) {
-            _synth.pause();     // never cancel() on WebKit — see above
-            console.log('[VideoTrack][TTS] muted — paused (WebKit: cancel would wedge it)');
-          } else {
-            _synth.cancel();
-            try { _synth.resume(); } catch (e) {}
-            console.log('[VideoTrack][TTS] muted — cancelled');
-          }
+          // A mute is a FULL STOP: drop whatever is queued, so unmuting later
+          // cannot resurrect half a message the reader has long moved past.
+          // pause() was tried here and is what made unmute pick up the old
+          // text again (emon, 2026-10-17: "點解又會再 show").
+          //
+          // The earlier worry that cancel() wedges WebKit came from symptoms
+          // that turned out to be bpSoundOn=null — the button was doing
+          // nothing at all. resume() straight after covers the one real
+          // hazard, which is cancel() leaving the engine paused; a paused
+          // engine ignores every later speak().
+          _synth.cancel();
+          try { _synth.resume(); } catch (e) {}
+          console.log('[VideoTrack][TTS] muted — stopped, queue dropped');
         }
       } catch (e) {}
       ttsKeepAliveStop();
       ttsScrollEnd();
     }
 
-    // Undo a mute. On WebKit the engine was paused mid-utterance, so resume()
-    // picks that up again; anywhere else there is nothing left to resume and
-    // the caller reads the latest message instead.
+    // Undo a mute: clear any paused state, then let the caller read ONLY the
+    // latest message. Nothing is resumed — see the note above.
     function ttsUnsilence() {
       try { if (_synth) _synth.resume(); } catch (e) {}
-      try {
-        if (IS_IOS && _synth && (_synth.speaking || _synth.pending)) {
-          _ttsBusy = true;
-          console.log('[VideoTrack][TTS] unmuted — resumed the paused utterance');
-          return true;        // already talking again; don't start a second read
-        }
-      } catch (e) {}
       return false;
     }
 
