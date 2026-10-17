@@ -4209,6 +4209,10 @@
             console.log('[VideoTrack][TTS] manual scroll — reader released for this message');
             return;
           }
+          // _scWant is a REMEMBERED position, and putting it back is what
+          // looked like "it jumps back to where it was before". Never do
+          // that to a reader who has scrolled up.
+          if (!_stick) { _scWant = sc.scrollTop; return; }
           noteScroll('TTS hold loop');
           sc.scrollTop = _scWant;                 // programmatic jump — put it back
           _scWant = sc.scrollTop;
@@ -4266,6 +4270,12 @@
       var target = ttsScrollTarget(frac, sc);
       if (target === null) return;
       if (_scWant >= 0 && Math.abs(target - _scWant) < 2) return;   // already there
+      // Read-aloud may steer only while the reader is still at the bottom.
+      // Once they have scrolled up, nothing read-aloud does may move them —
+      // this is the same rule new messages follow. Traced on prod: with the
+      // reader parked 1300px up, 'TTS follows the reading' walked the view
+      // down 444px per message until it reached the end.
+      if (!_stick) return;
       noteScroll('TTS follows the reading');
       sc.scrollTop = target;
       _scWant = sc.scrollTop;        // absorb any clamping the browser applies
