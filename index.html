@@ -1904,6 +1904,10 @@
     function markPending(rows) {
       for (var i = 0; i < rows.length; i++) _pending.push(rows[i]);
       _lastMsgAt = Date.now();     // restarts the quiet period — see setJumpVisible
+      // The bot is talking again, so read-aloud may steer the view again. The
+      // speaker tap's scroll suppression only covers the message that tap
+      // caused to be read.
+      if (typeof _ttsScrollOff !== 'undefined') _ttsScrollOff = false;
       scheduleRecount();
     }
     function clearUnread() {
@@ -3832,10 +3836,24 @@
     // So for a short window after the speaker is tapped, read-aloud makes no
     // scroll of its own. It still follows along normally once the window
     // passes; only the jump caused BY the tap is suppressed.
+    // A 2.5s window was not enough: priming and voice selection on a phone can
+    // take longer than that, and it only covered the OPENING jump — the
+    // progress ticks kept steering afterwards. So a speaker tap also raises a
+    // sticky flag that turns read-aloud's scrolling off COMPLETELY for the
+    // message it causes to be read. It clears when the bot next sends
+    // something, where following along is wanted again.
+    //
+    // Sound and scrolling are two unrelated things, and after this nothing a
+    // speaker tap does can move the view (emon, 2026-10-17: "一定要分開佢,
+    // 佢哋兩個完全冇關係").
     var SOUND_TAP_QUIET_MS = 2500;
-    var _soundTapAt = 0;
+    var _soundTapAt   = 0;
+    var _ttsScrollOff = false;
     function soundTapJustHappened() {
       return (Date.now() - _soundTapAt) < SOUND_TAP_QUIET_MS;
+    }
+    function ttsScrollMuted() {
+      return _ttsScrollOff || soundTapJustHappened();
     }
 
     // Marks input that can actually SCROLL. A plain tap (pointerdown/touchstart)
@@ -3914,7 +3932,7 @@
       _scrollHeld = false;
       // Muting routes through ttsStop() to here. Tapping the speaker is not a
       // request to move the view, so swallow the catch-up scroll.
-      if (soundTapJustHappened()) return;
+      if (ttsScrollMuted()) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -3934,7 +3952,7 @@
       // but it still needs to be brought into view. The one exception is a
       // burst that ended because the user just muted: that tap was about
       // sound, not about where they are reading.
-      if (soundTapJustHappened()) return;
+      if (ttsScrollMuted()) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -3947,10 +3965,16 @@
       _scAbort = false;
       _scWant = -1;
       _scEl = ttsScrollElFor(_scRow);   // resolve from the row, not by guessing
-      // Land on the message before the voice starts — EXCEPT right after a
-      // speaker tap, where that jump is the thing the user complained about.
-      // The hold loop then seeds itself from wherever they already are.
-      if (!soundTapJustHappened()) ttsScrollJump(0);
+      // Started by a speaker tap: read, but steer NOTHING. No opening jump and
+      // no position loop at all — otherwise the progress ticks drag the view
+      // to the message being spoken a second or two later, which is what the
+      // 2.5s window missed. Sound and scrolling are unrelated.
+      if (ttsScrollMuted()) {
+        _scAbort = true;
+        console.log('[VideoTrack][TTS] reading without scrolling — started by a speaker tap');
+        return;
+      }
+      ttsScrollJump(0);                 // land on the message before the voice starts
       ttsScrollLoopStart();
     }
 
@@ -4474,6 +4498,29 @@
       _ttsOn = cur;
       if (!_ttsOn) ttsStop();
       console.log('[VideoTrack][TTS] follows Botpress speaker →', _ttsOn ? 'ON (unmuted)' : 'OFF (muted)');
+      // Unmuting has to DO something, or the button feels broken: while muted
+      // ttsScanDom still marks every row done (so a mute is not a backlog), so
+      // after unmuting there is nothing left to say and the next sound only
+      // arrives with the bot's next message. Read the latest message now.
+      if (_ttsOn) ttsSpeakLatestRow('unmuted');
+    }
+
+    // Speak the newest bot message on demand. Used by unmute; deliberately
+    // scroll-free (see ttsScrollMuted) — the user asked for sound, not to be
+    // moved somewhere.
+    function ttsSpeakLatestRow(why) {
+      try {
+        if (!_ttsSupported || !_ttsOn) return;
+        var rows = ttsMessageRows();
+        if (!rows || !rows.length) return;
+        var row = rows[rows.length - 1];
+        var clean = ttsSanitize(ttsRowText(row));
+        if (!clean || clean.length < 2) return;
+        _ttsScrollOff = true;          // cleared when the bot next sends something
+        _ttsArmed = true;              // an explicit request outranks the arming window
+        console.log('[VideoTrack][TTS] ' + why + ' — reading the latest message:', clean.slice(0, 40));
+        ttsSpeak(clean, row);
+      } catch (e) {}
     }
 
     // iOS/Safari refuse speak() until one utterance has run inside a real user
