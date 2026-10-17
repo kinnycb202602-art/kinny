@@ -4479,6 +4479,37 @@
       } catch (e) { return null; }
     }
 
+    // Read the speaker's state from the ICON ITSELF, not from storage.
+    //
+    // (emon, 2026-10-17) bpSoundIsOn() came back null on a real phone — the
+    // bp-webchat-…-sound key it looks for is not there — which left every
+    // mute/unmute branch dead, and then made our own toggle start out of step
+    // with the icon, so mute spoke and unmute went silent. Botpress draws a
+    // lucide volume icon and its class names state the answer outright:
+    // volume-x / volume-off = muted, volume / volume-1 / volume-2 = on.
+    // The x/off test must come first — "lucide-volume-x" also contains
+    // "lucide-volume".
+    function bpSoundIsOnDom() {
+      try {
+        var sr = bpShadowRoot();
+        if (!sr) return null;
+        var els = sr.querySelectorAll('[class*="lucide-volume"]');
+        for (var i = 0; i < els.length; i++) {
+          var cls = els[i].className;
+          if (cls && typeof cls === 'object') cls = cls.baseVal || '';
+          cls = String(cls || '');
+          if (/lucide-volume-(x|off)/i.test(cls)) return false;
+          if (/lucide-volume/i.test(cls)) return true;
+        }
+      } catch (e) {}
+      return null;
+    }
+    // The icon first, storage only as a fallback.
+    function bpSoundState() {
+      var dom = bpSoundIsOnDom();
+      return (dom === null) ? bpSoundIsOn() : dom;
+    }
+
     function bpSoundBtn() {
       var sr = bpShadowRoot();
       if (!sr) return null;
@@ -4554,7 +4585,7 @@
           return true;
         }
       } catch (e) {}
-      var cur = bpSoundIsOn();
+      var cur = bpSoundState();
       if (cur === null) return false;                 // can't read state yet — retry
       if (cur === true) {                             // already unmuted, nothing to click
         _ttsOn = true;
@@ -4586,7 +4617,7 @@
       // Botpress has persisted its own setting, or this poll reads the stale
       // value and undoes what the tap just did.
       if (soundTapJustHappened()) return;
-      var cur = bpSoundIsOn();
+      var cur = bpSoundState();
       if (cur === null || cur === _ttsOn) return;
       _ttsOn = cur;
       if (!_ttsOn) ttsSilenceForMute();   // NOT ttsStop() — its cancel() wedges WebKit
@@ -4966,7 +4997,7 @@
                  speaking: !!(_synth && _synth.speaking),
                  chunksLeft: _ttsQueue.length, messagesQueued: _ttsMsgQueue.length,
                  busy: _ttsBusy, mediaPlaying: ttsMediaPlaying(),
-                 bpSoundOn: bpSoundIsOn(), bpSoundKey: bpSoundKey(),
+                 bpSoundOn: bpSoundState(), bpSoundDom: bpSoundIsOnDom(), bpSoundKey: bpSoundKey(),
                  initialSoundSettled: _ttsSoundSettled,
                  voice: _ttsVoice && (_ttsVoice.name + ' [' + _ttsVoice.lang + ']'),
                  cantonese: _ttsVoiceIsCanto };
@@ -5445,7 +5476,13 @@
           // persisted so it survives a reload, and nothing here depends on
           // being able to read Botpress's private storage.
           try {
-            var turningOn = !_ttsOn;
+            // Direction comes from the ICON's state before this tap, so we can
+            // never end up inverted against what the user is looking at — which
+            // is what a bare toggle of our own state produced (mute spoke,
+            // unmute went silent). Only if the icon cannot be read at all do we
+            // fall back to flipping our own state.
+            var shown = bpSoundIsOnDom();
+            var turningOn = (shown === null) ? !_ttsOn : !shown;
             _ttsOn = turningOn;
             try { localStorage.setItem(TTS_SOUND_FLAG, turningOn ? 'unmuted' : 'muted'); } catch (e4) {}
             console.log('[VideoTrack][TTS] speaker tapped → ' + (turningOn ? 'ON' : 'OFF'));
