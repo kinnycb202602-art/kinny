@@ -1631,6 +1631,13 @@
           // Scrolling down past a waiting message marks it read, and Botpress
           // (re)creates the circle from its own scroll handler, so this is also
           // where a freshly created circle first gets its badge.
+          var nowTop = Math.round(sc.scrollTop);
+          if (_scrollLast >= 0 && Math.abs(nowTop - _scrollLast) > 80) {
+            console.log('[VideoTrack][SCROLL] ' + _scrollLast + ' -> ' + nowTop +
+                        '  by: ' + _scrollWhy +
+                        ' (' + (Date.now() - _scrollWhyAt) + 'ms ago)');
+          }
+          _scrollLast = nowTop;
           recountUnread();
         }, { passive: true });
       }
@@ -1685,6 +1692,16 @@
     var _jumpVis   = false;
     var _jumpWant  = false;
     var _jumpVisT  = null;
+
+    // ── Who moved the view? ──────────────────────────────────
+    // (emon, 2026-10-17) The chat still scrolls on a speaker tap, and guessing
+    // has cost enough time. Every place WE set scrollTop stamps a reason here,
+    // and the scroll listener logs any jump over 80px with that reason and how
+    // long ago it was stamped. A jump with no fresh reason next to it was NOT
+    // us - that would be Botpress's own scrolling, which needs a different
+    // fix. Console only, costs nothing.
+    var _scrollWhy = 'none', _scrollWhyAt = 0, _scrollLast = -1;
+    function noteScroll(why) { _scrollWhy = why; _scrollWhyAt = Date.now(); }
 
     function chatGapBelow() {
       var sc = chatScrollEl();
@@ -1830,6 +1847,7 @@
         }
         if (delta < MIN_STEP) delta = step;               // never a dead-feeling tap
         var was = sc.scrollTop;
+        noteScroll('jump button');
         sc.scrollTop = Math.min(max, sc.scrollTop + delta);
         // Read-aloud's position keeper reverts anything it did not do itself,
         // and a tap is not a scroll gesture — tell it this position is wanted.
@@ -1936,7 +1954,7 @@
       // Not forced = content arrived on its own. The view does not move, full
       // stop; the circle and its count are the whole notification.
       if (!force) { scheduleRecount(); return; }
-      if (sc) sc.scrollTop = sc.scrollHeight;
+      if (sc) { noteScroll('forced scroll to bottom'); sc.scrollTop = sc.scrollHeight; }
       clearUnread();
       // Also nudge the painscale widget into view if present.
       if (_painScaleEl && _painScaleEl.scrollIntoView) {
@@ -4019,6 +4037,7 @@
             console.log('[VideoTrack][TTS] manual scroll — reader released for this message');
             return;
           }
+          noteScroll('TTS hold loop');
           sc.scrollTop = _scWant;                 // programmatic jump — put it back
           _scWant = sc.scrollTop;
           if (now - _scLoggedAt > 1000) {         // throttled so a fight is visible but not spammy
@@ -4075,6 +4094,7 @@
       var target = ttsScrollTarget(frac, sc);
       if (target === null) return;
       if (_scWant >= 0 && Math.abs(target - _scWant) < 2) return;   // already there
+      noteScroll('TTS follows the reading');
       sc.scrollTop = target;
       _scWant = sc.scrollTop;        // absorb any clamping the browser applies
 
@@ -4090,6 +4110,7 @@
           console.log('[VideoTrack][TTS] jump missed (row ' + Math.round(off) +
                       'px from top) — using scrollIntoView');
           try { _scRow.scrollIntoView({ block: 'start', inline: 'nearest' }); } catch (e) {}
+          noteScroll('TTS conversation gap');
           sc.scrollTop = Math.max(0, sc.scrollTop - ttsConvGap(sc));
           _scWant = sc.scrollTop;
         }
