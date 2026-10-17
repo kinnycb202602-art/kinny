@@ -1592,22 +1592,74 @@
     // renderUnread() MUST stay idempotent: it runs from a MutationObserver on
     // the message list, and a write on every call would feed that observer back
     // into itself (see the Page-Unresponsive loop of 2026-09).
-    var _unread  = 0;
-    var _pending = [];        // rows the reader has not scrolled down to yet
+    // ── Why this is OUR button and not Botpress's ──────────
+    // It was Botpress's own .bpMessageListScrollDownButton, decorated, because
+    // of the 2026-09-01 decision not to run two controls for the same job.
+    // That does not work for this behaviour and cannot be made to: Botpress
+    // shows its circle when the USER HAS SCROLLED UP, not when there is
+    // content below. With the view frozen on arrival, the reader never scrolls
+    // — the list simply grows underneath them — so Botpress keeps thinking
+    // they are at the bottom and never renders the circle, which left nothing
+    // to hang the badge on. (emon, prod, 2026-10-17: a message arrived
+    // half-cut-off at the bottom with no circle at all.)
+    //
+    // So this is our own control, and Botpress's is hidden in the injected CSS
+    // — still exactly one control, which is what that decision was about.
+    var _unread   = 0;
+    var _pending  = [];       // rows the reader has not caught up with yet
     var _recountT = null;
+    var _jumpTick = null;
 
+    // Anything at all still below the fold (not just unread) — the arrow is
+    // also a plain "go to the newest" when a card is cut off at the bottom.
+    function chatGapBelow() {
+      var sc = chatScrollEl();
+      if (!sc) return 0;
+      return sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+    }
+
+    // Create (or re-create, after a Botpress re-render) the jump button. It
+    // lives in .bpMessageListContainer, which is position:relative and is where
+    // Botpress puts its own, so it sits over the list and above the composer.
+    function ensureJumpBtn() {
+      var sr = bpShadowRoot();
+      if (!sr) return null;
+      var host = sr.querySelector('.bpMessageListContainer') ||
+                 sr.querySelector('.bpMessageListViewport');
+      if (!host) return null;
+      var btn = sr.querySelector('#vt-jump');
+      if (btn) {
+        if (btn.parentNode === host) return btn;
+        try { btn.remove(); } catch (e) {}   // stale host after a re-render
+      }
+      btn = document.createElement('button');
+      btn.id = 'vt-jump';
+      btn.type = 'button';
+      btn.setAttribute('aria-label', '去最新訊息');
+      btn.innerHTML =
+        '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
+          '<path d="M12 4v14m0 0l-6-6m6 6l6-6" fill="none" stroke="#fff" ' +
+          'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
+        '</svg>' +
+        '<span id="vt-unread" aria-live="polite"></span>';
+      btn.addEventListener('click', function () {
+        scrollChatToBottom(true);
+      });
+      host.appendChild(btn);
+      return btn;
+    }
+
+    // Idempotent: it runs from a MutationObserver on the message list, and a
+    // write on every call would feed that observer back into itself (see the
+    // Page-Unresponsive loop of 2026-09). Only ever writes on a real change.
     function renderUnread() {
       try {
-        var sr = bpShadowRoot();
-        var btn = sr && sr.querySelector('.bpMessageListScrollDownButton');
-        if (!btn) return;                       // at the bottom — nothing to show
+        var btn = ensureJumpBtn();
+        if (!btn) return;
+        var show = (_unread > 0 || chatGapBelow() > 24) ? 'flex' : 'none';
+        if (btn.style.display !== show) btn.style.display = show;
         var b = btn.querySelector('#vt-unread');
-        if (!b) {
-          b = document.createElement('span');
-          b.id = 'vt-unread';
-          b.setAttribute('aria-live', 'polite');
-          btn.appendChild(b);
-        }
+        if (!b) return;
         var txt  = _unread > 99 ? '99+' : String(_unread);
         var disp = _unread > 0 ? 'flex' : 'none';
         if (b.textContent !== txt) b.textContent = txt;
@@ -1615,16 +1667,19 @@
       } catch (e) {}
     }
 
+    // Unread == rows that are not fully visible yet. Measured, not tallied, so
+    // scrolling down past one clears it with no bookkeeping, and a short
+    // message that fits on screen is never reported as unread.
     function recountUnread() {
       try {
         var sc = chatScrollEl();
         if (!sc) return;
-        var edge = sc.getBoundingClientRect().bottom - 24;   // a sliver counts as seen
+        var edge = sc.getBoundingClientRect().bottom - 8;
         var n = 0, keep = [];
         for (var i = 0; i < _pending.length; i++) {
           var r = _pending[i];
           if (!r || !r.isConnected) continue;
-          if (r.getBoundingClientRect().top > edge) { n++; keep.push(r); }
+          if (r.getBoundingClientRect().bottom > edge) { n++; keep.push(r); }
         }
         _pending = keep;
         _unread  = n;
@@ -1632,17 +1687,16 @@
       } catch (e) {}
     }
     // Coalesced: a burst of mutations produces one measurement, after layout.
+    // The later passes catch a card that grows once its image or video loads.
     function scheduleRecount() {
-      if (_recountT) return;
-      _recountT = setTimeout(function () {
-        _recountT = null;
-        recountUnread();
-      }, 120);
-      // Botpress creates the circle from its own scroll handler, which can run
-      // a beat later — most visibly during read-aloud, where nothing of ours
-      // scrolls afterwards to retrigger the render. Two idempotent retries.
-      setTimeout(renderUnread, 350);
-      setTimeout(renderUnread, 1000);
+      if (!_recountT) {
+        _recountT = setTimeout(function () {
+          _recountT = null;
+          recountUnread();
+        }, 120);
+      }
+      setTimeout(recountUnread, 450);
+      setTimeout(recountUnread, 1200);
     }
     function markPending(rows) {
       for (var i = 0; i < rows.length; i++) _pending.push(rows[i]);
@@ -1652,6 +1706,13 @@
       _pending = [];
       _unread  = 0;
       renderUnread();
+    }
+    // Safety net: Botpress re-renders the list and can drop our button, and a
+    // card can change height without any mutation we observe. Read-only unless
+    // something actually changed, so this is cheap.
+    function startJumpTick() {
+      if (_jumpTick) return;
+      _jumpTick = setInterval(recountUnread, 900);
     }
 
     function scrollChatToBottom(force) {
@@ -1748,45 +1809,30 @@
         '@media (prefers-reduced-motion:reduce){' +
           '.bpMessageContainer{animation:none!important;}' +
         '}' +
-        // ── "回到最新" circle: bigger and in the brand green ──
-        // (emon, 2026-10-17) Now that the view is no longer force-pinned to the
-        // bottom, this native control is how a reader who scrolled up gets back
-        // to the newest message — so it has to be seen and hit easily by an
-        // elderly user. Botpress's own circle is deliberately still the ONE
-        // control for this job: it was hidden for a day in favour of a custom
-        // green button and emon reverted that on 2026-09-01. Only its size and
-        // contrast are changed here; no second button is added.
-        // display:flex + padding:0 is what centres the arrow. Botpress ships
-        // the button as display:block with padding:6px, which was fine at its
-        // own small size but left the glyph pinned to the top-left once the
-        // circle grew to 54px (emon, 2026-10-17).
-        // left:auto + right + margin:0 moves it off Botpress's own centring
-        // (it ships left:0;right:0;margin:0 auto) over to the right-hand side,
-        // where a thumb reaches it.
-        '.bpMessageListScrollDownButton{' +
-          'width:54px!important;height:54px!important;min-width:54px!important;' +
-          'display:flex!important;align-items:center!important;' +
-          'justify-content:center!important;padding:0!important;' +
-          'left:auto!important;right:18px!important;margin:0!important;' +
-          'background:#2f7d63!important;color:#fff!important;opacity:1!important;' +
-          'border:2px solid #fff!important;' +
+        // ── "回到最新" circle — OURS, not Botpress's ──────────
+        // (emon, 2026-10-17) Botpress's own .bpMessageListScrollDownButton is
+        // hidden: it only appears once the USER has scrolled up, never when the
+        // list simply grows below a frozen view, so it cannot do this job at
+        // all. #vt-jump replaces it entirely — still exactly ONE control, which
+        // is what the 2026-09-01 "no second button" decision was about.
+        '.bpMessageListScrollDownButton{display:none!important;}' +
+        '#vt-jump{position:absolute!important;right:18px!important;bottom:18px!important;' +
+          'z-index:20!important;width:54px!important;height:54px!important;' +
+          'display:none;align-items:center!important;justify-content:center!important;' +
+          'padding:0!important;margin:0!important;box-sizing:border-box!important;' +
+          'border-radius:50%!important;border:2px solid #fff!important;' +
+          'background:#2f7d63!important;cursor:pointer!important;' +
           'box-shadow:0 6px 18px rgba(0,0,0,.28)!important;}' +
-        // Unread count, WhatsApp-style. Appended into the button by
-        // renderUnread(); pointer-events:none so the whole circle stays one
-        // tap target.
+        '#vt-jump svg{width:26px!important;height:26px!important;display:block!important;}' +
+        // Unread count, WhatsApp-style. pointer-events:none so the whole circle
+        // stays one tap target.
         '#vt-unread{position:absolute!important;top:-5px!important;right:-5px!important;' +
           'min-width:26px!important;height:26px!important;box-sizing:border-box!important;' +
           'padding:0 6px!important;border-radius:13px!important;' +
           'border:2px solid #fff!important;background:#d93025!important;color:#fff!important;' +
           'font-size:14px!important;font-weight:700!important;line-height:1!important;' +
-          'align-items:center!important;justify-content:center!important;' +
+          'display:none;align-items:center!important;justify-content:center!important;' +
           'box-shadow:0 2px 6px rgba(0,0,0,.3)!important;pointer-events:none!important;}' +
-        // The arrow is not an <svg>: the button is empty and Botpress paints
-        // the glyph on ::after with a mask-image, tinted by background-color
-        // (grey #697383 by default — unreadable once the circle is green).
-        '.bpMessageListScrollDownButton::after{' +
-          'width:26px!important;height:26px!important;' +
-          'background-color:#fff!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -2362,11 +2408,13 @@
         }
       }, true);
 
-      // 2) Auto-scroll to the newest message. Pin to bottom when the user is
-      //    already near the bottom (don't yank them if they scrolled up to read).
+      // 2) A new message never moves the view — it only registers the row so
+      //    the jump button can report how much is still below the fold.
       var sc = bpScrollEl(sr);
       if (sc) {
         wireStickWatcher();
+        ensureJumpBtn();
+        startJumpTick();
         var mo = new MutationObserver(function (muts) {
           // The view is NEVER pinned from here any more — a message arriving
           // must not move an elderly reader's screen, whatever their scroll
