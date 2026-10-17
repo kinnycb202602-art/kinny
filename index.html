@@ -1622,82 +1622,32 @@
     // they switched on has finished. Nothing the BOT does is ever forced.
     var _stickEl = null;      // the scroll element the scroll watcher is on
 
+    // Resolve the scroller UPWARDS FROM A MESSAGE ROW, not by picking the
+    // first scrollable div in the shadow root.
+    //
+    // (emon, iPhone, 2026-10-17: "明明已經喺最底，但話我有 24 個未讀".) In a
+    // long conversation more than one div qualifies as scrollable, and the
+    // first one is not always the message list. Everything is then measured
+    // against the wrong box: rows that are plainly on screen look like they
+    // are below the fold, so the count ran away and the pill never went
+    // quiet. Walking up from a row that is definitely inside the transcript
+    // always lands on the element that really scrolls it.
     function chatScrollEl() {
       var sr = bpShadowRoot();
-      return bpScrollEl(sr) ||
-             (sr && (sr.querySelector('.bpMessageListContainer') ||
-                     sr.querySelector('.bpMessageListViewport'))) || null;
-    }
-    function wireStickWatcher() {
-      var sc = chatScrollEl();
-      if (!sc) return null;
-      if (_stickEl !== sc) {
-        _stickEl = sc;
-        sc.addEventListener('scroll', function () {
-          // Scrolling down past a waiting message marks it read, and Botpress
-          // (re)creates the circle from its own scroll handler, so this is also
-          // where a freshly created circle first gets its badge.
-          var nowTop = Math.round(sc.scrollTop);
-          if (_scrollLast >= 0 && Math.abs(nowTop - _scrollLast) > 80) {
-            console.log('[VideoTrack][SCROLL] ' + _scrollLast + ' -> ' + nowTop +
-                        '  by: ' + _scrollWhy +
-                        ' (' + (Date.now() - _scrollWhyAt) + 'ms ago)');
-          }
-          _scrollLast = nowTop;
-          _stick = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
-          recountUnread();
-        }, { passive: true });
+      if (!sr) return null;
+      var rows = sr.querySelectorAll('.bpMessageContainer');
+      var row  = rows.length ? rows[rows.length - 1] : null;
+      for (var n = row; n && n.nodeType === 1; n = n.parentNode) {
+        try {
+          var cs = getComputedStyle(n);
+          if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+              n.scrollHeight > n.clientHeight + 4) return n;
+        } catch (e) {}
       }
-      return sc;
+      return bpScrollEl(sr) ||
+             sr.querySelector('.bpMessageListContainer') ||
+             sr.querySelector('.bpMessageListViewport') || null;
     }
-
-    // ── Unread counter on the "回到最新" circle ─────────────
-    // Unread == message rows whose top is still below the visible area. Counted
-    // by measuring rather than by tallying arrivals, so a short message that
-    // happens to fit on screen is never reported as unread, and scrolling down
-    // past one clears it without any bookkeeping.
-    //
-    // renderUnread() MUST stay idempotent: it runs from a MutationObserver on
-    // the message list, and a write on every call would feed that observer back
-    // into itself (see the Page-Unresponsive loop of 2026-09).
-    // ── Why this is OUR button and not Botpress's ──────────
-    // It was Botpress's own .bpMessageListScrollDownButton, decorated, because
-    // of the 2026-09-01 decision not to run two controls for the same job.
-    // That does not work for this behaviour and cannot be made to: Botpress
-    // shows its circle when the USER HAS SCROLLED UP, not when there is
-    // content below. With the view frozen on arrival, the reader never scrolls
-    // — the list simply grows underneath them — so Botpress keeps thinking
-    // they are at the bottom and never renders the circle, which left nothing
-    // to hang the badge on. (emon, prod, 2026-10-17: a message arrived
-    // half-cut-off at the bottom with no circle at all.)
-    //
-    // So this is our own control, and Botpress's is hidden in the injected CSS
-    // — still exactly one control, which is what that decision was about.
-    var _unread   = 0;
-    var _recountT = null;
-    var _jumpTick = null;
-
-    // ── Why the button waits, and why it does not blink ──────
-    // (emon, prod, 2026-10-17: "成個 icon 有時候會閃下閃下, 好混亂")
-    // Three separate causes, all of them fixed here rather than by one knob:
-    //   1. While Kinny is still sending, every card that arrives or grows
-    //      moves the bottom edge, so a plain "is there anything below?" test
-    //      flips true/false several times a second. The button therefore does
-    //      not appear at all until the bot has been QUIET for QUIET_MS.
-    //   2. Showing and hiding each have to hold for a moment before they take
-    //      effect, so a single stray measurement can never produce a blink.
-    //   3. Appearing and disappearing use different thresholds (hysteresis):
-    //      it takes SHOW_PX of content below to appear but only drops out
-    //      under HIDE_PX, so hovering around one number cannot oscillate.
-    var QUIET_MS = 1000;      // bot must be silent this long before it appears
-    var SHOW_MS  = 400;       // "should be visible" must hold this long
-    var HIDE_MS  = 800;       // ditto for "should be hidden" — slower on purpose
-    var SHOW_PX  = 80;        // content below needed to appear
-    var HIDE_PX  = 16;        // content below under which it goes away
-    var _lastMsgAt = 0;
-    var _jumpVis   = false;
-    var _jumpWant  = false;
-    var _jumpVisT  = null;
 
     // ── Who moved the view? ──────────────────────────────────
     // (emon, 2026-10-17) The chat still scrolls on a speaker tap, and guessing
@@ -2049,13 +1999,16 @@
     var _stick = true;
     var _followT = null;
 
-    function smoothScrollTo(sc, top) {
-      try {
-        if (typeof sc.scrollTo === 'function') { sc.scrollTo({ top: top, behavior: 'smooth' }); return; }
-      } catch (e) {}
-      sc.scrollTop = top;
-    }
-
+    // Pinning, the way a messaging app does it: while the reader is at the
+    // bottom the view simply stays at the bottom as content arrives. Instant,
+    // every message.
+    //
+    // The previous attempt animated a smooth scroll per message on a 260ms
+    // debounce, and emon's verdict was "逐步逐步彈出嚟, 唔似 WhatsApp" — the
+    // animation is exactly what makes it feel stepwise. Pinned at the bottom
+    // there is nothing to animate: the content grows downwards and the eye
+    // stays where it is. The original jumpiness complaint was about being
+    // dragged while scrolled UP, which is still never done.
     function followNewMessage() {
       try {
         if (!_stick) return;                                   // reader is up the page
@@ -2063,25 +2016,18 @@
         if (ttsScrollMuted()) return;                          // a speaker tap owns the view
         var sc = chatScrollEl();
         if (!sc) return;
-        var rows = sc.querySelectorAll('.bpMessageContainer');
-        var row  = rows[rows.length - 1];
-        if (!row) return;
-        var scR = sc.getBoundingClientRect(), rR = row.getBoundingClientRect();
         var max = sc.scrollHeight - sc.clientHeight;
-        var target = (rR.height > sc.clientHeight - 40)
-          ? sc.scrollTop + (rR.top - scR.top) - 12       // taller than a screen: start at its top
-          : sc.scrollTop + (rR.bottom - scR.bottom) + 16; // fits: show the whole thing
-        target = Math.max(0, Math.min(max, target));
-        if (target <= sc.scrollTop + 2) return;          // already visible, and never scroll up
-        noteScroll('follow new message');
-        smoothScrollTo(sc, target);
+        if (max - sc.scrollTop < 2) return;
+        noteScroll('pinned to bottom');
+        sc.scrollTop = max;
       } catch (e) {}
     }
-    // One follow per burst: each arrival restarts the timer, so a run of cards
-    // produces a single movement once they have all landed.
+    // Also run a beat later, for a card that grows once its image or video
+    // has loaded.
     function scheduleFollow() {
-      if (_followT) clearTimeout(_followT);
-      _followT = setTimeout(function () { _followT = null; followNewMessage(); }, 260);
+      followNewMessage();
+      setTimeout(followNewMessage, 180);
+      setTimeout(followNewMessage, 600);
     }
 
     // The observer only tells us THAT something arrived; the count itself is
