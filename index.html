@@ -1943,7 +1943,17 @@
         var gap   = chatGapBelow();
         var quiet = (Date.now() - _lastMsgAt) >= QUIET_MS;
         // Never over the welcome screen, a confirm popup, or fullscreen video.
-        var blocked = (typeof _convStarted !== 'undefined' && !_convStarted) ||
+        // Also hidden whenever the 開始 button is on screen: _convStarted is a
+        // latch and stays true after a restart, so it alone let the circle sit
+        // on the welcome splash (emon's screenshot, 2026-10-17). The start
+        // button's own visibility is the honest test.
+        var startVisible = false;
+        try {
+          var sb = document.getElementById('vt-start-btn');
+          startVisible = !!(sb && getComputedStyle(sb).display !== 'none');
+        } catch (e2) {}
+        var blocked = startVisible ||
+                      (typeof _convStarted !== 'undefined' && !_convStarted) ||
                       (typeof popupOpen === 'function' && popupOpen()) ||
                       (typeof _vfs !== 'undefined' && !!_vfs);
         // Hysteresis: once visible it takes a much smaller gap to stay.
@@ -2115,6 +2125,12 @@
         // styles live in the DOCUMENT stylesheet, not here: the button had to
         // move out of the shadow root to clear the image/video buttons.
         '.bpMessageListScrollDownButton{display:none!important;}' +
+        // Header back arrow (lucide chevron-left, "Show Recent
+        // Conversations Button") removed at emon's request, 2026-10-17:
+        // there is only ever one conversation here, and for an elderly user
+        // a back arrow next to the title invites leaving the lesson.
+        'svg.lucide-chevron-left,[aria-label="Show Recent Conversations Button"]{' +
+          'display:none!important;pointer-events:none!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
