@@ -3783,6 +3783,25 @@
       _scWant = -1;
     }
 
+    // ── A speaker tap must not move the view ─────────────────
+    // (emon, 2026-10-17: "撳 Mute / Unmute 會 scroll 到去某一高度")
+    // Both directions moved it, for different reasons, and both were correct
+    // in their own right — just not what someone asked for by tapping a sound
+    // control:
+    //   • MUTE   → ttsWatchSound sees _ttsOn false → ttsStop() →
+    //              ttsReleaseScroll() → a FORCED scroll to the bottom.
+    //   • UNMUTE → reading starts → ttsScrollBegin() → ttsScrollJump(0),
+    //              which deliberately lands the view on the message about to
+    //              be spoken — wherever in the transcript that is.
+    // So for a short window after the speaker is tapped, read-aloud makes no
+    // scroll of its own. It still follows along normally once the window
+    // passes; only the jump caused BY the tap is suppressed.
+    var SOUND_TAP_QUIET_MS = 2500;
+    var _soundTapAt = 0;
+    function soundTapJustHappened() {
+      return (Date.now() - _soundTapAt) < SOUND_TAP_QUIET_MS;
+    }
+
     // Marks input that can actually SCROLL. A plain tap (pointerdown/touchstart)
     // deliberately does not count: the user taps 「OK」, the bot answers, Botpress
     // scrolls — and mistaking that for a manual scroll would drop the hold at
@@ -3857,6 +3876,9 @@
       _ttsSession = false;
       if (typeof _scrollHeld === 'undefined' || !_scrollHeld) return;
       _scrollHeld = false;
+      // Muting routes through ttsStop() to here. Tapping the speaker is not a
+      // request to move the view, so swallow the catch-up scroll.
+      if (soundTapJustHappened()) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -3871,9 +3893,12 @@
       _scrollHeld = false;
       ttsScrollEnd();
       console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
-      // Unconditional: the tail of the burst (a video card, a choice widget)
-      // often isn't a spoken message, so there may have been no suppressed pin
-      // to replay — but it still needs to be brought into view.
+      // The tail of the burst (a video card, a choice widget) often isn't a
+      // spoken message, so there may have been no suppressed pin to replay —
+      // but it still needs to be brought into view. The one exception is a
+      // burst that ended because the user just muted: that tap was about
+      // sound, not about where they are reading.
+      if (soundTapJustHappened()) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -3886,7 +3911,10 @@
       _scAbort = false;
       _scWant = -1;
       _scEl = ttsScrollElFor(_scRow);   // resolve from the row, not by guessing
-      ttsScrollJump(0);                 // land on the message before the voice starts
+      // Land on the message before the voice starts — EXCEPT right after a
+      // speaker tap, where that jump is the thing the user complained about.
+      // The hold loop then seeds itself from wherever they already are.
+      if (!soundTapJustHappened()) ttsScrollJump(0);
       ttsScrollLoopStart();
     }
 
@@ -5180,6 +5208,8 @@
         // through untouched, so the start-of-session unmute can never click
         // their choice back a moment later.
         if (isSoundControl(e.target, sr)) {
+          // Sound is sound — it must not move the view. See soundTapJustHappened().
+          _soundTapAt = Date.now();
           if (!_ttsUserTouchedSound) {
             _ttsUserTouchedSound = true;
             _ttsSoundSettled = true;
