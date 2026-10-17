@@ -2173,11 +2173,24 @@
       // does allow typing, unlock and focus right here, and the keyboard opens
       // on this same tap. If it genuinely does not allow typing, nothing
       // happens — the lock still means what it meant.
-      ['pointerdown', 'touchstart'].forEach(function (evt) {
+      // All four: WebKit honours focus() from some of these and not others
+      // depending on version, and one tap fires several — the handler is
+      // idempotent, so trying on each costs nothing and the earliest one that
+      // works wins.
+      ['pointerdown', 'touchstart', 'touchend', 'click'].forEach(function (evt) {
         sr.addEventListener(evt, function (e) {
           var t = e.target;
           if (!t || !t.classList || !t.classList.contains('bpComposerInput')) return;
-          if (_composerEnabled) return;
+          if (_composerEnabled) {
+            // Already unlocked but the keyboard never came up (iOS drops the
+            // focus when readOnly was cleared between the tap and now) — ask
+            // again from inside this gesture.
+            try {
+              var sr2 = bpShadowRoot();
+              if (sr2 && sr2.activeElement !== t && t.focus) t.focus();
+            } catch (e4) {}
+            return;
+          }
           try { refreshComposerLock(); } catch (e2) {}
           if (_composerEnabled && t.focus) {
             try { t.focus(); } catch (e3) {}
@@ -4435,12 +4448,21 @@
     function ttsWireGesturePriming() {
       var _lastGestureAt = 0;
       function onGesture(e) {
-        if (_ttsSpoke) {                       // proven working — stop listening
-          document.removeEventListener('pointerdown', onGesture, true);
-          document.removeEventListener('touchend', onGesture, true);
-          document.removeEventListener('click', onGesture, true);
-          return;
-        }
+        // Proven working — nothing to do. The listeners are DELIBERATELY left
+        // attached (they used to remove themselves here).
+        //
+        // On a phone the speech engine is re-locked every time the page is
+        // backgrounded — app switch, screen off, an incoming call. _ttsSpoke
+        // only records that an utterance once started, which says nothing
+        // about the engine's state after that. With the listeners gone and
+        // _ttsPrimed still true, nothing could ever re-prime, and read-aloud
+        // was silent for the rest of the visit on every mobile browser
+        // (emon, 2026-10-17: "所有 mobile 嘅 browser 都要 fix"). Returning to
+        // the page now clears _ttsSpoke/_ttsPrimed (see visibilitychange), so
+        // the next real tap primes again — which only works if these are
+        // still listening. Three capture listeners that return immediately
+        // cost nothing.
+        if (_ttsSpoke) return;
         // Only a REAL tap carries user activation. ttsApplyInitialUnmute()
         // calls btn.click() on Botpress's speaker, which bubbles here as a
         // synthetic click: priming on it burns the one attempt (the engine
@@ -5437,6 +5459,15 @@
       try { ttsStop(); } catch (e) {}
       console.log('[VideoTrack][TTS] disarmed —', why);
     }
+    // Coming back from the background re-locks the speech engine on iOS (and
+    // on Android often enough to matter), so the next real tap has to be
+    // allowed to prime it again. Without this, _ttsPrimed stayed true, the
+    // prime was skipped, and the engine was never unlocked again.
+    function ttsAllowRePrime(why) {
+      _ttsSpoke  = false;
+      _ttsPrimed = false;
+      console.log('[VideoTrack][TTS] will re-prime on the next tap —', why);
+    }
     function ttsRearm(delay) {
       if (_ttsArmTimer) clearTimeout(_ttsArmTimer);
       _ttsArmTimer = setTimeout(function () {
@@ -5455,14 +5486,17 @@
         // Coming back is not "activity" for the idle popup, but a tab hidden
         // for hours must not fire it the instant it returns.
         idleNudge();
+        ttsAllowRePrime('page visible again');
         ttsRearm(2000);
       }
     });
     // bfcache restore and mobile tab-freeze both land here rather than on
     // visibilitychange in some browsers.
-    window.addEventListener('pageshow', function (e) { if (e.persisted) { ttsDisarm('bfcache restore'); ttsRearm(2000); } });
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) { ttsDisarm('bfcache restore'); ttsAllowRePrime('bfcache restore'); ttsRearm(2000); }
+    });
     window.addEventListener('freeze', function () { ttsDisarm('frozen'); });
-    window.addEventListener('resume', function () { ttsRearm(2000); });
+    window.addEventListener('resume', function () { ttsAllowRePrime('resumed'); ttsRearm(2000); });
 
     // ── Debug mode: show status bar when ?debug in URL ───────
     // ── On-screen TTS readout: ?ttsdebug ─────────────────────
