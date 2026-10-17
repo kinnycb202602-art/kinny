@@ -3964,13 +3964,14 @@
       _ttsSession = false;
       _scrollHeld = false;
       ttsScrollEnd();
-      console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
+      if (ttsScrollMuted()) {
+        console.log('[VideoTrack][TTS] burst finished — NOT scrolling (speaker tap)');
+        return;
+      }
       // The tail of the burst (a video card, a choice widget) often isn't a
       // spoken message, so there may have been no suppressed pin to replay —
-      // but it still needs to be brought into view. The one exception is a
-      // burst that ended because the user just muted: that tap was about
-      // sound, not about where they are reading.
-      if (ttsScrollMuted()) return;
+      // but it still needs to be brought into view.
+      console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -4311,6 +4312,13 @@
       } catch (e) {}
       ttsKeepAliveStop();
       ttsScrollEnd();
+      // A mute must not move the view EVER, including later: ttsMaybeEndSession()
+      // fires right after this ('burst finished - releasing to the newest
+      // message' in emon's capture) and forces a scroll to the bottom. Its guard
+      // was only a 2.5s window, so a burst that wrapped up later still jumped.
+      // The sticky flag closes that; markPending() clears it when the bot next
+      // sends something.
+      _ttsScrollOff = true;
     }
 
     // Undo a mute: clear any paused state, then let the caller read ONLY the
