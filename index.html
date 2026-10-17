@@ -1755,6 +1755,23 @@
       }, 250);
     }
 
+    // ── Jump-pill state ─────────────────────────────────────
+    // (Restored 2026-10-17: a bulk replace took this whole block out with the
+    // function above it, and every new message then threw "_recountT is not
+    // defined" — which is why the count and the pill stopped working.)
+    var QUIET_MS = 1000;      // bot must be silent this long before the pill appears
+    var SHOW_MS  = 400;       // "should be visible" must hold this long
+    var HIDE_MS  = 800;       // ditto for "should be hidden" — slower on purpose
+    var SHOW_PX  = 80;        // content below needed to appear
+    var HIDE_PX  = 16;        // content below under which it goes away
+    var _lastMsgAt = 0;
+    var _jumpVis   = false;
+    var _jumpWant  = false;
+    var _jumpVisT  = null;
+    var _unread    = 0;
+    var _recountT  = null;
+    var _jumpTick  = null;
+
     function chatGapBelow() {
       var sc = chatScrollEl();
       if (!sc) return 0;
