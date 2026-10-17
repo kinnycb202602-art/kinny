@@ -121,37 +121,44 @@
     #vt-jump {
       position: fixed;
       z-index: 2147483646;
-      right: 18px;
+      right: 16px;
       top: 0;                /* placeJumpBtn() measures this off the composer */
       bottom: auto;
-      width: 54px;
-      height: 54px;
+      height: 48px;
       box-sizing: border-box;
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 0;
+      gap: 8px;
+      padding: 0 16px 0 12px;
       margin: 0;
       border: 2px solid #fff;
-      border-radius: 50%;
+      border-radius: 26px;
       background: #2f7d63;
+      color: #fff;
+      font: 600 17px/1 -apple-system, BlinkMacSystemFont, 'PingFang HK', 'Noto Sans HK', sans-serif;
       cursor: pointer;
       box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
       -webkit-tap-highlight-color: transparent;
     }
-    #vt-jump svg { width: 26px; height: 26px; display: block; }
-    /* Unread count, WhatsApp-style. pointer-events:none so the whole circle
-       stays one tap target. */
+    #vt-jump svg { width: 22px; height: 22px; display: block; flex: 0 0 auto; }
+    #vt-jump-label { white-space: nowrap; }
+    /* One gentle bounce when it appears — an arrow alone is not obvious to an
+       elderly reader, so the pill carries words and a small movement to catch
+       the eye once, then sits still. */
+    @keyframes vt-jump-in {
+      0%   { transform: translateY(10px); opacity: 0; }
+      60%  { transform: translateY(-3px); opacity: 1; }
+      100% { transform: translateY(0);    opacity: 1; }
+    }
+    #vt-jump.vt-jump-show { animation: vt-jump-in .34s ease-out both; }
+    @media (prefers-reduced-motion: reduce) { #vt-jump.vt-jump-show { animation: none; } }
     #vt-unread {
-      position: absolute;
-      top: -5px;
-      right: -5px;
-      min-width: 26px;
-      height: 26px;
+      min-width: 24px;
+      height: 24px;
       box-sizing: border-box;
       padding: 0 6px;
-      border: 2px solid #fff;
-      border-radius: 13px;
+      border-radius: 12px;
       background: #d93025;
       color: #fff;
       font-size: 14px;
@@ -160,8 +167,7 @@
       display: none;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-      pointer-events: none;
+      flex: 0 0 auto;
     }
 
     /* ── Image enlarge button (one per image, always visible) ── */
@@ -1638,6 +1644,7 @@
                         ' (' + (Date.now() - _scrollWhyAt) + 'ms ago)');
           }
           _scrollLast = nowTop;
+          _stick = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
           recountUnread();
         }, { passive: true });
       }
@@ -1792,7 +1799,11 @@
         _jumpVisT = null;
         _jumpVis  = _jumpWant;
         var btn = ensureJumpBtn();
-        if (btn) btn.style.display = _jumpVis ? 'flex' : 'none';
+        if (btn) {
+          btn.style.display = _jumpVis ? 'flex' : 'none';
+          btn.classList.remove('vt-jump-show');
+          if (_jumpVis) { void btn.offsetWidth; btn.classList.add('vt-jump-show'); }
+        }
       }, want ? SHOW_MS : HIDE_MS);
     }
 
@@ -1851,6 +1862,7 @@
           '<path d="M12 4v14m0 0l-6-6m6 6l6-6" fill="none" stroke="#fff" ' +
           'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
+        '<span id="vt-jump-label">有新訊息</span>' +
         '<span id="vt-unread" aria-live="polite"></span>';
       btn.addEventListener('click', function (e) {
         // Stop Botpress's own list handlers from seeing this click at all.
@@ -1960,6 +1972,9 @@
                   : _jumpVis ? (gap > HIDE_PX)
                              : (quiet && (gap > SHOW_PX || _unread > 0));
         setJumpVisible(want);
+        var lab = btn.querySelector('#vt-jump-label');
+        var want2 = _unread > 0 ? '有新訊息' : '回到最新';
+        if (lab && lab.textContent !== want2) lab.textContent = want2;
         var b = btn.querySelector('#vt-unread');
         if (!b) return;
         var txt  = _unread > 99 ? '99+' : String(_unread);
@@ -2012,6 +2027,63 @@
       setTimeout(recountUnread, 450);
       setTimeout(recountUnread, 1200);
     }
+    // ── Follow a new message, WhatsApp style ────────────────
+    // (emon, 2026-10-17) Never moving at all left the reader stranded: the new
+    // message could not be seen, and an arrow is not an obvious invitation to
+    // scroll. The distinction that was missing is not "move vs don't" — it is
+    // whether the reader is MID-READ:
+    //   • already at the bottom, waiting for a reply → following is expected,
+    //     exactly as every messaging app does it;
+    //   • scrolled up reading something → never move, show the pill.
+    //
+    // Two things keep this from feeling like the original jumpiness: it is
+    // SMOOTH (the eye tracks the motion instead of being teleported) and it
+    // happens ONCE per burst, not four times per message. And it stops at the
+    // top of a message taller than the screen, so a long one is read from its
+    // beginning rather than its end.
+    //
+    // _stick is read from the last real scroll, never measured here: by the
+    // time a message lands the card has already grown the list, so measuring
+    // now always says "far from the bottom" and nothing would ever follow.
+    var STICK_PX = 140;
+    var _stick = true;
+    var _followT = null;
+
+    function smoothScrollTo(sc, top) {
+      try {
+        if (typeof sc.scrollTo === 'function') { sc.scrollTo({ top: top, behavior: 'smooth' }); return; }
+      } catch (e) {}
+      sc.scrollTop = top;
+    }
+
+    function followNewMessage() {
+      try {
+        if (!_stick) return;                                   // reader is up the page
+        if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) return;
+        if (ttsScrollMuted()) return;                          // a speaker tap owns the view
+        var sc = chatScrollEl();
+        if (!sc) return;
+        var rows = sc.querySelectorAll('.bpMessageContainer');
+        var row  = rows[rows.length - 1];
+        if (!row) return;
+        var scR = sc.getBoundingClientRect(), rR = row.getBoundingClientRect();
+        var max = sc.scrollHeight - sc.clientHeight;
+        var target = (rR.height > sc.clientHeight - 40)
+          ? sc.scrollTop + (rR.top - scR.top) - 12       // taller than a screen: start at its top
+          : sc.scrollTop + (rR.bottom - scR.bottom) + 16; // fits: show the whole thing
+        target = Math.max(0, Math.min(max, target));
+        if (target <= sc.scrollTop + 2) return;          // already visible, and never scroll up
+        noteScroll('follow new message');
+        smoothScrollTo(sc, target);
+      } catch (e) {}
+    }
+    // One follow per burst: each arrival restarts the timer, so a run of cards
+    // produces a single movement once they have all landed.
+    function scheduleFollow() {
+      if (_followT) clearTimeout(_followT);
+      _followT = setTimeout(function () { _followT = null; followNewMessage(); }, 260);
+    }
+
     // The observer only tells us THAT something arrived; the count itself is
     // measured in recountUnread(), so no list of rows is kept any more.
     function markPending(rows) {
@@ -2020,6 +2092,7 @@
       // speaker tap's scroll suppression only covers the message that tap
       // caused to be read.
       if (typeof _ttsScrollOff !== 'undefined') _ttsScrollOff = false;
+      scheduleFollow();
       scheduleRecount();
     }
     function clearUnread() {
@@ -2136,6 +2209,9 @@
         // styles live in the DOCUMENT stylesheet, not here: the button had to
         // move out of the shadow root to clear the image/video buttons.
         '.bpMessageListScrollDownButton{display:none!important;}' +
+        // Room at the foot of the transcript for the jump pill, so the newest
+        // message can never end up sitting underneath it (emon, 2026-10-17).
+        '.bpMessageListViewport{padding-bottom:72px!important;}' +
         // Header back arrow (lucide chevron-left, "Show Recent
         // Conversations Button") removed at emon's request, 2026-10-17:
         // there is only ever one conversation here, and for an elderly user
