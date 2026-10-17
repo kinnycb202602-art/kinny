@@ -1713,6 +1713,38 @@
     //   • window.scrollY              — the PAGE scrolled, not the list
     // Each line carries the last reason one of OUR writes stamped, so a jump
     // with a stale reason is Botpress's doing, not ours.
+    // ── Pin the view across a speaker tap, whatever tries to move it ──
+    // (emon, 2026-10-17) It still jumps back to the position from the previous
+    // speaker tap, and the tracer shows none of OUR writes doing it — so
+    // something else restores a remembered position, most likely Botpress's
+    // own message list on re-render. Rather than keep hunting it, the rule is
+    // enforced directly: note where the reader is at the tap, and for the next
+    // 1.5s put the view straight back if anything moves it. 1.5s is long
+    // enough to cover a re-render and short enough that the reader's own
+    // scrolling is never fought for more than a moment.
+    var _holdTimer = null;
+    function holdScrollFor(ms) {
+      try {
+        var sc0 = chatScrollEl();
+        if (!sc0) return;
+        var want  = sc0.scrollTop;
+        var until = Date.now() + (ms || 1500);
+        if (_holdTimer) clearInterval(_holdTimer);
+        _holdTimer = setInterval(function () {
+          try {
+            var el = chatScrollEl();
+            if (el && Math.abs(el.scrollTop - want) > 4) {
+              console.log('[VideoTrack][SCROLL] speaker-tap hold: put back ' +
+                          Math.round(el.scrollTop) + ' -> ' + Math.round(want));
+              noteScroll('speaker-tap hold');
+              el.scrollTop = want;
+            }
+          } catch (e) {}
+          if (Date.now() > until) { clearInterval(_holdTimer); _holdTimer = null; }
+        }, 50);
+      } catch (e) {}
+    }
+
     var _swLast = null, _swTick = null;
     function startScrollWatch() {
       if (_swTick) return;
@@ -5520,6 +5552,8 @@
           if (e && e.isTrusted === false) return;
           // Sound is sound — it must not move the view. See soundTapJustHappened().
           _soundTapAt = Date.now();
+          _ttsScrollOff = true;
+          holdScrollFor(1500);   // and physically hold it there
           // If this tap is turning sound ON, speak RIGHT HERE, inside the
           // gesture. A phone's speech engine only accepts speak() while a real
           // user activation is in flight; doing it from the 250ms poller (as
