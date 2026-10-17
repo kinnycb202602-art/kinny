@@ -122,7 +122,8 @@
       position: fixed;
       z-index: 2147483646;
       right: 18px;
-      bottom: 92px;          /* re-measured against the composer when shown */
+      top: 0;                /* placeJumpBtn() measures this off the composer */
+      bottom: auto;
       width: 54px;
       height: 54px;
       box-sizing: border-box;
@@ -1715,17 +1716,38 @@
     //
     // Sitting over the page means it has to be placed against the composer
     // rather than against a container, so its `bottom` is re-measured here.
+    // Positioned with TOP, not bottom.
+    //
+    // It was `bottom: innerHeight - composerTop + 12`, which mixes two
+    // coordinate systems. On iOS Safari window.innerHeight is the LAYOUT
+    // viewport — its bottom edge sits underneath the browser's own bottom
+    // toolbar — while getBoundingClientRect() is measured against the visual
+    // viewport. The two disagree by roughly the height of that toolbar, so the
+    // button was pushed below the visible area and simply never appeared.
+    // Safari only; Chrome and desktop happened to agree closely enough
+    // (emon, 2026-10-17: "mobile safari downarrow button 冇咗, 其他 browser 冇問題").
+    //
+    // A fixed element's `top` and getBoundingClientRect() are the same
+    // coordinate space in every browser, so deriving one from the other needs
+    // no viewport arithmetic at all.
+    var JUMP_SIZE = 54;
     function placeJumpBtn(btn) {
       try {
         var sr = bpShadowRoot();
         var comp = sr && (sr.querySelector('.bpComposerInputContainer') ||
-                          sr.querySelector('.bpComposer'));
-        var want = comp
-          ? Math.round(window.innerHeight - comp.getBoundingClientRect().top + 12)
-          : 92;
-        if (!(want > 20 && want < window.innerHeight - 60)) want = 92;
+                          sr.querySelector('.bpComposer') ||
+                          sr.querySelector('.bpComposerContainer'));
+        var r = comp && comp.getBoundingClientRect();
+        var vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+        var want = (r && r.height > 0) ? Math.round(r.top - JUMP_SIZE - 12)
+                                       : Math.round(vh - JUMP_SIZE - 92);
+        // Keep it on screen whatever the measurement said.
+        var max = Math.round(vh - JUMP_SIZE - 8);
+        if (!isFinite(want) || want > max) want = max;
+        if (want < 8) want = 8;
         var px = want + 'px';
-        if (btn.style.bottom !== px) btn.style.bottom = px;
+        if (btn.style.top !== px) btn.style.top = px;
+        if (btn.style.bottom !== 'auto') btn.style.bottom = 'auto';
       } catch (e) {}
     }
 
@@ -2137,6 +2159,29 @@
           if (t && t.classList && t.classList.contains('bpComposerInput')) {
             e.preventDefault();
             e.stopImmediatePropagation();
+          }
+        }, true);
+      });
+      // iOS: a tap on a readOnly input raises no keyboard, and once the lock is
+      // lifted a moment later the keyboard still will not come up without a
+      // NEW tap — so the first tap always felt dead, and the user had to tap
+      // twice (emon, iOS Chrome, 2026-10-17: "撳落去佢唔識得將個 soft keyboard
+      // 彈出嚟"). Most visible right after a refresh, where the restored step
+      // is re-judged a beat after the page settles.
+      //
+      // So re-judge the lock SYNCHRONOUSLY inside the gesture: if this step
+      // does allow typing, unlock and focus right here, and the keyboard opens
+      // on this same tap. If it genuinely does not allow typing, nothing
+      // happens — the lock still means what it meant.
+      ['pointerdown', 'touchstart'].forEach(function (evt) {
+        sr.addEventListener(evt, function (e) {
+          var t = e.target;
+          if (!t || !t.classList || !t.classList.contains('bpComposerInput')) return;
+          if (_composerEnabled) return;
+          try { refreshComposerLock(); } catch (e2) {}
+          if (_composerEnabled && t.focus) {
+            try { t.focus(); } catch (e3) {}
+            console.log('[VideoTrack] composer unlocked on tap — keyboard raised on this gesture');
           }
         }, true);
       });
@@ -4280,10 +4325,15 @@
     // nothing to click — it exists to undo a mute that persisted in
     // localStorage from an earlier visit.
     //
-    // The "already done" flag is deliberately stored under a bp-webchat- prefix:
-    // the 7-day reset block at the top of this file wipes every bp-webchat-* key,
-    // so this flag dies with the conversation and the NEXT session starts
-    // unmuted again — while a mute during a session still sticks across reloads.
+    // This key now holds the user's own choice — 'muted' or 'unmuted' — written
+    // when they tap the speaker, and nothing else. It used to hold a bare "we
+    // already ran" flag, which the auto-unmute wrote on the first load too and
+    // which then silenced read-aloud after every later refresh (2026-10-17).
+    //
+    // Still deliberately under a bp-webchat- prefix: the 7-day reset block at
+    // the top of this file wipes every bp-webchat-* key, so the choice dies
+    // with the conversation and the NEXT session starts unmuted again — while
+    // a mute chosen during a session still sticks across reloads.
     var TTS_SOUND_FLAG   = 'bp-webchat-vt-initial-sound';
     var _ttsSoundSettled = false;  // true once the initial state is applied (or given up on)
     // ⚠️ Two hard rules, both learned the hard way (2026-09-01). This function
@@ -4300,15 +4350,22 @@
     function ttsApplyInitialUnmute() {
       // The user has taken control — their choice wins, permanently.
       if (_ttsUserTouchedSound) { _ttsSoundSettled = true; return true; }
-      // Already handled earlier this session (e.g. a reload) — respect whatever
-      // the user has since chosen.
+      // Only a MUTE the user chose themselves survives a reload.
+      //
+      // FIXED 2026-10-17 (emon, iOS Chrome: "refresh 之後通常都會冇咗語音").
+      // This used to read a bare "handled" flag — which the auto-unmute below
+      // ALSO wrote on the very first load. So from the second page load
+      // onwards this returned early, _ttsOn was never set true, and
+      // ttsWatchSound then followed Botpress's speaker, which comes back muted
+      // on every fresh load. Result: read-aloud was silent after any refresh,
+      // for the rest of that browser's life. What has to persist across a
+      // reload is the user's CHOICE, not the fact that we once ran.
       try {
-        if (localStorage.getItem(TTS_SOUND_FLAG) === '1') { _ttsSoundSettled = true; return true; }
+        if (localStorage.getItem(TTS_SOUND_FLAG) === 'muted') { _ttsSoundSettled = true; return true; }
       } catch (e) {}
       var cur = bpSoundIsOn();
       if (cur === null) return false;                 // can't read state yet — retry
       if (cur === true) {                             // already unmuted, nothing to click
-        try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e) {}
         _ttsOn = true;
         _ttsSoundSettled = true;
         return true;
@@ -4318,7 +4375,6 @@
       if (!btn) return false;                         // button not rendered yet — retry
       _ttsUnmuteClicked = true;
       try { btn.click(); } catch (e) { return false; }
-      try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e) {}
       _ttsOn = true;
       _ttsSoundSettled = true;
       console.log('[VideoTrack][TTS] unmuted for the start of this session — ' +
@@ -5127,9 +5183,17 @@
           if (!_ttsUserTouchedSound) {
             _ttsUserTouchedSound = true;
             _ttsSoundSettled = true;
-            try { localStorage.setItem(TTS_SOUND_FLAG, '1'); } catch (e2) {}
             console.log('[VideoTrack][TTS] speaker tapped by the user — start-of-session unmute disabled');
           }
+          // Record WHICH way they set it, every time, so a reload can respect a
+          // mute without also suppressing the unmute (see ttsApplyInitialUnmute).
+          // Read after the tick, once Botpress has actually toggled.
+          setTimeout(function () {
+            try {
+              var on = bpSoundIsOn();
+              if (on !== null) localStorage.setItem(TTS_SOUND_FLAG, on ? 'unmuted' : 'muted');
+            } catch (e2) {}
+          }, 300);
           return;
         }
         if (popupOpen()) return;
