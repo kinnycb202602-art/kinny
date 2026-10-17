@@ -1703,6 +1703,46 @@
     var _scrollWhy = 'none', _scrollWhyAt = 0, _scrollLast = -1;
     function noteScroll(why) { _scrollWhy = why; _scrollWhyAt = Date.now(); }
 
+    // The first tracer only logged scroll EVENTS on the one element we watch,
+    // and emon's capture showed the view jumping with no line at all — so it
+    // is not any of our five scrollTop writes. This samples the whole picture
+    // instead, four times a second, and reports whichever part moved:
+    //   • the chat list's scrollTop   — somebody scrolled the list
+    //   • its scrollHeight            — content appeared/disappeared, which
+    //                                   moves the view without any scroll
+    //   • window.scrollY              — the PAGE scrolled, not the list
+    // Each line carries the last reason one of OUR writes stamped, so a jump
+    // with a stale reason is Botpress's doing, not ours.
+    var _swLast = null, _swTick = null;
+    function startScrollWatch() {
+      if (_swTick) return;
+      _swTick = setInterval(function () {
+        try {
+          var sc = chatScrollEl();
+          if (!sc) return;
+          var now = {
+            top: Math.round(sc.scrollTop),
+            h:   Math.round(sc.scrollHeight),
+            ch:  Math.round(sc.clientHeight),
+            win: Math.round(window.scrollY || window.pageYOffset || 0)
+          };
+          if (_swLast) {
+            var dTop = now.top - _swLast.top;
+            var dH   = now.h   - _swLast.h;
+            var dWin = now.win - _swLast.win;
+            if (Math.abs(dTop) > 80 || Math.abs(dWin) > 40 || Math.abs(dH) > 400) {
+              console.log('[VideoTrack][SCROLL] top ' + _swLast.top + '->' + now.top +
+                          ' (' + (dTop >= 0 ? '+' : '') + dTop + ')' +
+                          '  h ' + _swLast.h + '->' + now.h +
+                          '  win ' + _swLast.win + '->' + now.win +
+                          '  by: ' + _scrollWhy + ' (' + (Date.now() - _scrollWhyAt) + 'ms ago)');
+            }
+          }
+          _swLast = now;
+        } catch (e) {}
+      }, 250);
+    }
+
     function chatGapBelow() {
       var sc = chatScrollEl();
       if (!sc) return 0;
@@ -2661,6 +2701,7 @@
         wireStickWatcher();
         ensureJumpBtn();
         startJumpTick();
+        startScrollWatch();
         var mo = new MutationObserver(function (muts) {
           // The view is NEVER pinned from here any more — a message arriving
           // must not move an elderly reader's screen, whatever their scroll
