@@ -110,10 +110,63 @@
        below from "display: none" to "display: flex".            */
     #vt-status-bar { display: none !important; }
 
+    /* ── Jump-to-next-message button ──────────────────────────
+       Lives in the DOCUMENT, not the webchat's shadow root. It used to be in
+       the shadow root at a modest z-index, and the image "enlarge" button —
+       position:fixed at document level — painted right over it, so the circle
+       was half-hidden AND taps landed on the enlarge button instead. That is
+       the other half of why the arrow felt dead (emon, prod, 2026-10-17).
+       It sits one below the fullscreen/modal layer, and the image and video
+       buttons sit one below it. */
+    #vt-jump {
+      position: fixed;
+      z-index: 2147483646;
+      right: 18px;
+      bottom: 92px;          /* re-measured against the composer when shown */
+      width: 54px;
+      height: 54px;
+      box-sizing: border-box;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      margin: 0;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      background: #2f7d63;
+      cursor: pointer;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+      -webkit-tap-highlight-color: transparent;
+    }
+    #vt-jump svg { width: 26px; height: 26px; display: block; }
+    /* Unread count, WhatsApp-style. pointer-events:none so the whole circle
+       stays one tap target. */
+    #vt-unread {
+      position: absolute;
+      top: -5px;
+      right: -5px;
+      min-width: 26px;
+      height: 26px;
+      box-sizing: border-box;
+      padding: 0 6px;
+      border: 2px solid #fff;
+      border-radius: 13px;
+      background: #d93025;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 700;
+      line-height: 1;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      pointer-events: none;
+    }
+
     /* ── Image enlarge button (one per image, always visible) ── */
     .vt-img-btn {
       position: fixed;
-      z-index: 2147483646;
+      z-index: 2147483645;
       width: 32px;
       height: 32px;
       background: rgba(0, 0, 0, 0.55);
@@ -130,7 +183,7 @@
 
     /* iOS landscape-fullscreen button on videos + rotated overlay */
     .vt-vid-btn {
-      position: fixed; z-index: 2147483646; width: 36px; height: 36px;
+      position: fixed; z-index: 2147483645; width: 36px; height: 36px;
       background: rgba(0, 0, 0, 0.62); border: none; border-radius: 8px;
       cursor: pointer; display: flex; align-items: center; justify-content: center;
       color: #fff; font-size: 19px; line-height: 1; pointer-events: auto;
@@ -1654,20 +1707,31 @@
       }, want ? SHOW_MS : HIDE_MS);
     }
 
-    // Create (or re-create, after a Botpress re-render) the jump button. It
-    // lives in .bpMessageListContainer, which is position:relative and is where
-    // Botpress puts its own, so it sits over the list and above the composer.
+    // The button lives in document.body, NOT in the webchat's shadow root.
+    // In the shadow root it was underneath the image/video buttons, which are
+    // position:fixed at document level — the circle came out half-covered and,
+    // worse, taps landed on the enlarge button instead of on it. Being a
+    // sibling of those buttons is what lets z-index actually decide.
+    //
+    // Sitting over the page means it has to be placed against the composer
+    // rather than against a container, so its `bottom` is re-measured here.
+    function placeJumpBtn(btn) {
+      try {
+        var sr = bpShadowRoot();
+        var comp = sr && (sr.querySelector('.bpComposerInputContainer') ||
+                          sr.querySelector('.bpComposer'));
+        var want = comp
+          ? Math.round(window.innerHeight - comp.getBoundingClientRect().top + 12)
+          : 92;
+        if (!(want > 20 && want < window.innerHeight - 60)) want = 92;
+        var px = want + 'px';
+        if (btn.style.bottom !== px) btn.style.bottom = px;
+      } catch (e) {}
+    }
+
     function ensureJumpBtn() {
-      var sr = bpShadowRoot();
-      if (!sr) return null;
-      var host = sr.querySelector('.bpMessageListContainer') ||
-                 sr.querySelector('.bpMessageListViewport');
-      if (!host) return null;
-      var btn = sr.querySelector('#vt-jump');
-      if (btn) {
-        if (btn.parentNode === host) return btn;
-        try { btn.remove(); } catch (e) {}   // stale host after a re-render
-      }
+      var btn = document.getElementById('vt-jump');
+      if (btn) { placeJumpBtn(btn); return btn; }
       btn = document.createElement('button');
       btn.id = 'vt-jump';
       btn.type = 'button';
@@ -1678,8 +1742,14 @@
           'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
         '<span id="vt-unread" aria-live="polite"></span>';
-      btn.addEventListener('click', jumpStep);
-      host.appendChild(btn);
+      btn.addEventListener('click', function (e) {
+        // Stop Botpress's own list handlers from seeing this click at all.
+        try { e.preventDefault(); e.stopPropagation(); } catch (e2) {}
+        console.log('[VideoTrack] jump button tapped');
+        jumpStep();
+      });
+      document.body.appendChild(btn);
+      placeJumpBtn(btn);
       return btn;
     }
 
@@ -1737,10 +1807,18 @@
           break;
         }
         if (delta < MIN_STEP) delta = step;               // never a dead-feeling tap
+        var was = sc.scrollTop;
         sc.scrollTop = Math.min(max, sc.scrollTop + delta);
+        // Read-aloud's position keeper reverts anything it did not do itself,
+        // and a tap is not a scroll gesture — tell it this position is wanted.
+        if (typeof ttsAdoptScroll === 'function') ttsAdoptScroll();
+        console.log('[VideoTrack] jump: ' + was + ' → ' + sc.scrollTop +
+                    ' (delta ' + Math.round(delta) + ', room ' + Math.round(room) + ')');
         recountUnread();
         setTimeout(recountUnread, 350);
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[VideoTrack] jump failed:', e && e.message);
+      }
     }
 
     // Idempotent: it runs from a MutationObserver on the message list, and a
@@ -1752,8 +1830,14 @@
         if (!btn) return;
         var gap   = chatGapBelow();
         var quiet = (Date.now() - _lastMsgAt) >= QUIET_MS;
+        // Never over the welcome screen, a confirm popup, or fullscreen video.
+        var blocked = (typeof _convStarted !== 'undefined' && !_convStarted) ||
+                      (typeof popupOpen === 'function' && popupOpen()) ||
+                      (typeof _vfs !== 'undefined' && !!_vfs);
         // Hysteresis: once visible it takes a much smaller gap to stay.
-        var want  = _jumpVis ? (gap > HIDE_PX) : (quiet && (gap > SHOW_PX || _unread > 0));
+        var want  = blocked ? false
+                  : _jumpVis ? (gap > HIDE_PX)
+                             : (quiet && (gap > SHOW_PX || _unread > 0));
         setJumpVisible(want);
         var b = btn.querySelector('#vt-unread');
         if (!b) return;
@@ -1907,30 +1991,14 @@
         '@media (prefers-reduced-motion:reduce){' +
           '.bpMessageContainer{animation:none!important;}' +
         '}' +
-        // ── "回到最新" circle — OURS, not Botpress's ──────────
-        // (emon, 2026-10-17) Botpress's own .bpMessageListScrollDownButton is
-        // hidden: it only appears once the USER has scrolled up, never when the
-        // list simply grows below a frozen view, so it cannot do this job at
-        // all. #vt-jump replaces it entirely — still exactly ONE control, which
-        // is what the 2026-09-01 "no second button" decision was about.
+        // Botpress's own .bpMessageListScrollDownButton is hidden: it only
+        // appears once the USER has scrolled up, never when the list simply
+        // grows below a frozen view, so it cannot do this job at all. Our
+        // #vt-jump replaces it entirely — still exactly ONE control, which is
+        // what the 2026-09-01 "no second button" decision was about. Its own
+        // styles live in the DOCUMENT stylesheet, not here: the button had to
+        // move out of the shadow root to clear the image/video buttons.
         '.bpMessageListScrollDownButton{display:none!important;}' +
-        '#vt-jump{position:absolute!important;right:18px!important;bottom:18px!important;' +
-          'z-index:20!important;width:54px!important;height:54px!important;' +
-          'display:none;align-items:center!important;justify-content:center!important;' +
-          'padding:0!important;margin:0!important;box-sizing:border-box!important;' +
-          'border-radius:50%!important;border:2px solid #fff!important;' +
-          'background:#2f7d63!important;cursor:pointer!important;' +
-          'box-shadow:0 6px 18px rgba(0,0,0,.28)!important;}' +
-        '#vt-jump svg{width:26px!important;height:26px!important;display:block!important;}' +
-        // Unread count, WhatsApp-style. pointer-events:none so the whole circle
-        // stays one tap target.
-        '#vt-unread{position:absolute!important;top:-5px!important;right:-5px!important;' +
-          'min-width:26px!important;height:26px!important;box-sizing:border-box!important;' +
-          'padding:0 6px!important;border-radius:13px!important;' +
-          'border:2px solid #fff!important;background:#d93025!important;color:#fff!important;' +
-          'font-size:14px!important;font-weight:700!important;line-height:1!important;' +
-          'display:none;align-items:center!important;justify-content:center!important;' +
-          'box-shadow:0 2px 6px rgba(0,0,0,.3)!important;pointer-events:none!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -3653,6 +3721,22 @@
     // How long after a scroll gesture a position change still counts as theirs.
     // Generous, because iOS momentum keeps scrolling after the finger lifts.
     var TTS_USER_SCROLL_MS = 2000;
+
+    // The reader moved the view on purpose with a CONTROL of ours — the jump
+    // button — rather than by scrolling. A plain tap deliberately does not
+    // count as a scroll gesture (see mark() below), so without this the hold
+    // loop reads the jump as an auto-scroll and puts the view straight back on
+    // the next frame. That is why the jump button looked completely dead while
+    // read-aloud was running (emon, prod, 2026-10-17).
+    //
+    // Clearing _scWant rather than assigning a position is deliberate: the
+    // loop re-seeds it from wherever the view actually is on its next frame,
+    // so this works even if the jump and the loop resolved different scroll
+    // elements. The hold itself is NOT dropped — read-aloud keeps following
+    // the spoken text from the new position.
+    function ttsAdoptScroll() {
+      _scWant = -1;
+    }
 
     // Marks input that can actually SCROLL. A plain tap (pointerdown/touchstart)
     // deliberately does not count: the user taps 「OK」, the bot answers, Botpress
