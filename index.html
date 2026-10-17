@@ -4262,6 +4262,10 @@
     // So a mute cancels only if something is actually being spoken, and
     // immediately resumes — cancel() can also leave the engine paused, and a
     // paused engine ignores every later speak().
+    // Still wedged with cancel()-only-when-speaking, so on WebKit we now never
+    // cancel for a mute at all: pause() silences immediately and, unlike
+    // cancel(), leaves the engine usable — resume() on unmute brings it
+    // straight back. Elsewhere cancel() is fine and gives a cleaner stop.
     function ttsSilenceForMute() {
       _ttsCurrent  = '';
       _ttsQueue    = [];
@@ -4269,13 +4273,33 @@
       _ttsBusy     = false;
       try {
         if (_synth && (_synth.speaking || _synth.pending)) {
-          _synth.cancel();
-          try { _synth.resume(); } catch (e) {}
+          if (IS_IOS) {
+            _synth.pause();     // never cancel() on WebKit — see above
+            console.log('[VideoTrack][TTS] muted — paused (WebKit: cancel would wedge it)');
+          } else {
+            _synth.cancel();
+            try { _synth.resume(); } catch (e) {}
+            console.log('[VideoTrack][TTS] muted — cancelled');
+          }
         }
       } catch (e) {}
       ttsKeepAliveStop();
       ttsScrollEnd();
-      console.log('[VideoTrack][TTS] muted — stopped without wedging the engine');
+    }
+
+    // Undo a mute. On WebKit the engine was paused mid-utterance, so resume()
+    // picks that up again; anywhere else there is nothing left to resume and
+    // the caller reads the latest message instead.
+    function ttsUnsilence() {
+      try { if (_synth) _synth.resume(); } catch (e) {}
+      try {
+        if (IS_IOS && _synth && (_synth.speaking || _synth.pending)) {
+          _ttsBusy = true;
+          console.log('[VideoTrack][TTS] unmuted — resumed the paused utterance');
+          return true;        // already talking again; don't start a second read
+        }
+      } catch (e) {}
+      return false;
     }
 
     function ttsStop() {
@@ -4558,6 +4582,10 @@
       // after every refresh.
       if (!_ttsUserTouchedSound) return;
       if (!_ttsSoundSettled) return;
+      // The tap handler already applied the change. Stay out of the way until
+      // Botpress has persisted its own setting, or this poll reads the stale
+      // value and undoes what the tap just did.
+      if (soundTapJustHappened()) return;
       var cur = bpSoundIsOn();
       if (cur === null || cur === _ttsOn) return;
       _ttsOn = cur;
@@ -5400,10 +5428,19 @@
           // the first attempt did) works on desktop and is silent on every
           // phone. bpSoundIsOn() still reports the state BEFORE Botpress
           // toggles, so false here means "they are unmuting".
+          // Decide BOTH directions here and now, from the state before
+          // Botpress toggles. The 250ms poller used to do this, and it raced:
+          // Botpress persists the new setting a moment later, so the poll
+          // could still read "muted" right after an unmute and immediately
+          // silence the speech this tap had just started.
           try {
-            if (bpSoundIsOn() === false) {
+            var wasOn = bpSoundIsOn();
+            if (wasOn === false) {            // this tap turns sound ON
               _ttsOn = true;
-              ttsSpeakLatestRow('unmuted by tap');
+              if (!ttsUnsilence()) ttsSpeakLatestRow('unmuted by tap');
+            } else if (wasOn === true) {      // this tap turns sound OFF
+              _ttsOn = false;
+              ttsSilenceForMute();
             }
           } catch (e3) {}
           if (!_ttsUserTouchedSound) {
