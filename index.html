@@ -4112,10 +4112,12 @@
     // it discards rather than rewinds.
     // A queue entry is { text, row } — row is the message element, used to keep
     // the scroll position in step with the reading (ttsScrollAdvance).
-    function ttsSpeak(text, row) {
+    // `now` = this call is happening INSIDE a real user gesture (the speaker
+    // tap). It must reach _synth.speak() in the same tick — see ttsNextMessage.
+    function ttsSpeak(text, row, now) {
       if (!_ttsSupported || !_ttsOn || !text) return;
       _ttsSession = true;                   // burst starts (or continues)
-      _ttsMsgQueue.push({ text: text, row: row || null });
+      _ttsMsgQueue.push({ text: text, row: row || null, now: !!now });
       if (!_ttsBusy) ttsNextMessage();
     }
 
@@ -4136,8 +4138,26 @@
       _ttsQueue   = ttsChunk(item.text);
       ttsScrollBegin(item.row, item.text.length);
       ttsKeepAliveStart();
-      // Chrome/Edge drop an utterance passed to speak() in the same tick as a
-      // cancel(), and can be left in a stuck paused state. Small gap + nudge.
+      // ⚠️ THE 90ms HOP IS WHY PHONES WERE SILENT (emon, 2026-10-17).
+      //
+      // It exists because Chrome/Edge drop an utterance passed to speak() in
+      // the same tick as a cancel(), and can be left stuck paused. But user
+      // activation does NOT survive a setTimeout, and iOS/Android only unlock
+      // the speech engine for a speak() made INSIDE a gesture. So every real
+      // message reached the engine out-of-gesture; on a locked engine that is
+      // silence, while Botpress's own notification bump — an <audio> element,
+      // nothing to do with speechSynthesis — kept playing, which is exactly
+      // what the phone reports looked like. Desktop has no lock, so the hop
+      // was invisible there.
+      //
+      // A call made inside a gesture therefore goes straight through. Nothing
+      // was cancelled on that path, so the gap buys nothing anyway.
+      if (item.now) {
+        try { if (_synth.paused) _synth.resume(); } catch (e) {}
+        console.log('[VideoTrack][TTS] speaking inside the gesture — no deferral');
+        ttsPump();
+        return;
+      }
       setTimeout(function () {
         try { if (_synth.paused) _synth.resume(); } catch (e) {}
         ttsPump();
@@ -4531,7 +4551,9 @@
         _ttsScrollOff = true;          // cleared when the bot next sends something
         _ttsArmed = true;              // an explicit request outranks the arming window
         console.log('[VideoTrack][TTS] ' + why + ' — reading the latest message:', clean.slice(0, 40));
-        ttsSpeak(clean, row);
+        // `true`: we are inside the speaker tap, so this must reach the engine
+        // in the same tick — it is both the unlock and the first real speech.
+        ttsSpeak(clean, row, true);
       } catch (e) {}
     }
 
