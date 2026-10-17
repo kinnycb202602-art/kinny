@@ -5554,7 +5554,19 @@
             try { localStorage.setItem(TTS_SOUND_FLAG, turningOn ? 'unmuted' : 'muted'); } catch (e4) {}
             console.log('[VideoTrack][TTS] speaker tapped → ' + (turningOn ? 'ON' : 'OFF'));
             if (turningOn) {
-              if (!ttsUnsilence()) ttsSpeakLatestRow('unmuted by tap');
+              // Unmute does NOT read anything back. emon, 2026-10-17: the
+              // user may unmute long after muting, many messages later, so
+              // replaying "the latest message" meant jumping back to whatever
+              // was current at mute time and starting from there — wrong
+              // content and a jump away from where they actually are.
+              // Sound simply goes on, and Kinny's NEXT message is read.
+              //
+              // The tap still has to unlock the engine though, so prime here,
+              // inside the gesture — a silent utterance, no audio, nothing
+              // moved. Without it the next real message would reach a locked
+              // engine (it arrives out-of-gesture) and stay silent.
+              ttsUnsilence();
+              try { _ttsPrimed = false; ttsPrime(); } catch (e5) {}
             } else {
               ttsSilenceForMute();
             }
@@ -5849,10 +5861,18 @@
         console.warn = tee(console.warn);
         var box = document.createElement('div');
         box.id = 'vt-tts-debug';
-        box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:2147483644;' +
-          'max-height:46vh;overflow:auto;background:rgba(12,22,20,.94);color:#d7f5e8;' +
+        // TOP, not bottom, and taps pass straight through it.
+        //
+        // It used to sit at bottom:0 over the composer, which made the page
+        // untestable in debug mode: emon could not type or answer anything, so
+        // the very capture it exists to produce could not be taken
+        // (2026-10-17). Up here it covers old transcript instead, which is
+        // exactly what nobody needs while reproducing a bug.
+        box.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:2147483644;' +
+          'max-height:38vh;overflow:auto;background:rgba(12,22,20,.88);color:#d7f5e8;' +
           'font:11px/1.45 ui-monospace,Menlo,Consolas,monospace;padding:8px 10px;' +
-          'white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;';
+          'white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;' +
+          'pointer-events:none;';
         document.addEventListener('DOMContentLoaded', function () { document.body.appendChild(box); });
         if (document.body) document.body.appendChild(box);
         setInterval(function () {
