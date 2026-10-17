@@ -1996,21 +1996,27 @@
         var edge = sc.getBoundingClientRect().bottom - 8;
         var rows = sc.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
         if (!rows.length) rows = sc.querySelectorAll('.bpMessageContainer');
-        var below = 0;
-        for (var i = rows.length - 1; i >= 0; i--) {   // newest first; stop once above the fold
-          var r = rows[i].getBoundingClientRect();
-          if (r.height === 0) continue;                // not laid out yet
-          if (r.bottom > edge) below++; else break;
-        }
-        // "Unread" means messages that arrived AFTER the reader was last at
-        // the bottom — not simply everything below the fold. Someone who
-        // scrolls up to re-read gets "回到最新" and no number; three new
-        // messages while they are up there say 3, not "3 plus whatever else
-        // happens to be off screen". _readMark is a row COUNT, so nothing can
-        // go stale the way a list of elements did.
+        // "Unread" = rows that arrived AFTER the reader was last at the bottom
+        // AND are still not fully visible. Both halves matter:
+        //   • only rows past _readMark, so scrolling up to re-read old
+        //     messages shows 回到最新 with no number;
+        //   • only ones still off screen, so each tap that brings one into
+        //     view drops the count by one, which is what the reader expects.
+        // _readMark is a row COUNT, so nothing can go stale the way the old
+        // list of elements did.
         var total = rows.length;
-        if (_stick) { _readMark = total; _unread = 0; }
-        else        { _unread = Math.max(0, Math.min(total - _readMark, below)); }
+        if (_stick) {
+          _readMark = total;
+          _unread = 0;
+        } else {
+          var n = 0;
+          for (var i = total - 1; i >= _readMark; i--) {
+            var r = rows[i].getBoundingClientRect();
+            if (r.height === 0) continue;              // not laid out yet
+            if (r.bottom > edge) n++;
+          }
+          _unread = n;
+        }
         renderUnread();
       } catch (e) {}
     }
