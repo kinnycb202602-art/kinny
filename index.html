@@ -1667,7 +1667,6 @@
     // So this is our own control, and Botpress's is hidden in the injected CSS
     // — still exactly one control, which is what that decision was about.
     var _unread   = 0;
-    var _pending  = [];       // rows the reader has not caught up with yet
     var _recountT = null;
     var _jumpTick = null;
 
@@ -1973,22 +1972,34 @@
     // Unread == rows that are not fully visible yet. Measured, not tallied, so
     // scrolling down past one clears it with no bookkeeping, and a short
     // message that fits on screen is never reported as unread.
+    // Unread = bot message rows that are not fully visible yet. MEASURED from
+    // the DOM every time, not accumulated from what the MutationObserver
+    // happened to catch.
+    //
+    // (emon, iPhone, 2026-10-17: "有新 message 嚟嘅時候冇咗個 badge".) The
+    // arrow appears off a measurement and the badge used to come off a list of
+    // rows collected by the observer — so when Botpress rebuilt the list, or
+    // the observer was left on a detached node, the rows never entered that
+    // list: arrow shown, count stuck at zero. Measuring both the same way
+    // removes the whole class of problem, and needs no bookkeeping.
     function recountUnread() {
       try {
         var sc = chatScrollEl();
         if (!sc) return;
         var edge = sc.getBoundingClientRect().bottom - 8;
-        var n = 0, keep = [];
-        for (var i = 0; i < _pending.length; i++) {
-          var r = _pending[i];
-          if (!r || !r.isConnected) continue;
-          if (r.getBoundingClientRect().bottom > edge) { n++; keep.push(r); }
+        var rows = sc.querySelectorAll('.bpMessageContainer[data-direction="incoming"]');
+        if (!rows.length) rows = sc.querySelectorAll('.bpMessageContainer');
+        var n = 0;
+        for (var i = rows.length - 1; i >= 0; i--) {   // newest first; stop once above the fold
+          var r = rows[i].getBoundingClientRect();
+          if (r.height === 0) continue;                // not laid out yet
+          if (r.bottom > edge) n++; else break;
         }
-        _pending = keep;
-        _unread  = n;
+        _unread = n;
         renderUnread();
       } catch (e) {}
     }
+
     // Coalesced: a burst of mutations produces one measurement, after layout.
     // The later passes catch a card that grows once its image or video loads.
     function scheduleRecount() {
@@ -2001,8 +2012,9 @@
       setTimeout(recountUnread, 450);
       setTimeout(recountUnread, 1200);
     }
+    // The observer only tells us THAT something arrived; the count itself is
+    // measured in recountUnread(), so no list of rows is kept any more.
     function markPending(rows) {
-      for (var i = 0; i < rows.length; i++) _pending.push(rows[i]);
       _lastMsgAt = Date.now();     // restarts the quiet period — see setJumpVisible
       // The bot is talking again, so read-aloud may steer the view again. The
       // speaker tap's scroll suppression only covers the message that tap
@@ -2011,8 +2023,7 @@
       scheduleRecount();
     }
     function clearUnread() {
-      _pending = [];
-      _unread  = 0;
+      _unread = 0;
       renderUnread();
     }
     // Safety net: Botpress re-renders the list and can drop our button, and a
