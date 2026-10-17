@@ -1642,11 +1642,57 @@
           'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
         '<span id="vt-unread" aria-live="polite"></span>';
-      btn.addEventListener('click', function () {
-        scrollChatToBottom(true);
-      });
+      btn.addEventListener('click', jumpStep);
       host.appendChild(btn);
       return btn;
+    }
+
+    // ── What the jump button does: ONE SCREENFUL, never the end ──
+    // (emon, 2026-10-17) Flying to the bottom is exactly what loses an elderly
+    // reader: they cannot tell what they have already seen from what they have
+    // not. Someone following the read-aloud wants the next screenful. So each
+    // tap advances one screenful — with one adjustment: a box that needs an
+    // answer is useless half-shown, so if one falls inside that step the
+    // scroll is trimmed or stretched to land with the question AND its options
+    // fully visible.
+    //
+    // The count is re-measured afterwards, never cleared: if messages are
+    // still waiting below, the arrow stays and the number simply goes down.
+    function rowNeedsAnswer(row) {
+      try {
+        if (!row) return false;
+        if (_painScaleEl && (row === _painScaleEl || row.contains(_painScaleEl))) return true;
+        return !!row.querySelector('button, [role="button"]');
+      } catch (e) { return false; }
+    }
+
+    function jumpStep() {
+      try {
+        var sc = chatScrollEl();
+        if (!sc) return;
+        var scBottom = sc.getBoundingClientRect().bottom;
+        var step = Math.max(140, sc.clientHeight - 60);   // a screenful, less a line of overlap
+        var max  = sc.scrollHeight - sc.clientHeight;
+
+        // First thing below the fold that the reader has to act on.
+        var rows = sc.querySelectorAll('.bpMessageContainer');
+        var need = -1;
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i].getBoundingClientRect();
+          if (r.bottom <= scBottom - 8) continue;        // already fully visible
+          if (!rowNeedsAnswer(rows[i])) continue;
+          need = r.bottom - scBottom + 16;               // px needed to reveal it whole
+          break;
+        }
+
+        // Land on the question when it is within about a screenful (whether
+        // that means stopping short of a full page or reaching a little past
+        // it); otherwise just advance one screenful.
+        var delta = (need >= 0 && need <= step + 120) ? need : step;
+        sc.scrollTop = Math.min(max, sc.scrollTop + Math.max(0, delta));
+        recountUnread();
+        setTimeout(recountUnread, 350);
+      } catch (e) {}
     }
 
     // Idempotent: it runs from a MutationObserver on the message list, and a
