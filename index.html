@@ -1638,6 +1638,12 @@
       if (!n) return;
       _unread += n;
       renderUnread();
+      // Botpress creates the circle from its own scroll handler, which can run
+      // a beat after the message landed — most visibly during read-aloud,
+      // where the view is held still and no scroll of ours follows to retrigger
+      // the render. Two cheap idempotent retries cover that gap.
+      setTimeout(renderUnread, 250);
+      setTimeout(renderUnread, 900);
     }
 
     function scrollChatToBottom(force) {
@@ -2353,11 +2359,16 @@
       if (sc) {
         wireStickWatcher();
         var mo = new MutationObserver(function (muts) {
-          // Count message rows that landed while the reader was scrolled up —
-          // that is what the red badge on the circle reports. Counted before
-          // the read-aloud early-return, or a burst read aloud would not be
-          // counted at all.
-          if (!_stick) {
+          // Count message rows that landed while the reader could not see them
+          // — that is what the red badge on the circle reports. Two cases:
+          //   • the reader scrolled up themselves (!_stick), and
+          //   • read-aloud is holding the view on the message being spoken,
+          //     where _stick may still read as true even though the view is
+          //     pinned in place and the new rows are off-screen below.
+          // Counted BEFORE the read-aloud early-return below, or a burst being
+          // read aloud would never be counted at all.
+          var ttsHeld = (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll());
+          if (!_stick || ttsHeld) {
             var n = 0;
             for (var i = 0; i < muts.length; i++) {
               var added = muts[i].addedNodes;
@@ -2370,7 +2381,7 @@
             bumpUnread(n);
           }
           // Read-aloud owns the scroll while it's speaking — don't pin.
-          if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) { _scrollHeld = true; return; }
+          if (ttsHeld) { _scrollHeld = true; return; }
           // _stick, not a fresh measurement: see wireStickWatcher().
           if (_stick) { sc.scrollTop = sc.scrollHeight; }
         });
