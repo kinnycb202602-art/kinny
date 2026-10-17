@@ -4311,10 +4311,23 @@
       var until = Date.now() + 1000;
       _ttsPrimeProbe = setInterval(function () {
         if (_ttsSpoke || Date.now() > until) { clearInterval(_ttsPrimeProbe); _ttsPrimeProbe = null; return; }
+        // ⚠️ This used to set _ttsSpoke = true here, and that was THE mobile
+        // bug (emon, 2026-10-17: "desktop 冇事, 得 mobile 唔得").
+        //
+        // On a phone a LOCKED speech engine still reports `pending` — the
+        // utterance is queued and never spoken. So the very first tap made
+        // this probe declare the engine unlocked, _ttsSpoke went true, and
+        // ttsWireGesturePriming then stopped priming forever. The engine was
+        // never actually unlocked, and read-aloud was silent for the whole
+        // visit. Desktop has no such lock, which is why only phones saw it.
+        //
+        // Nothing but a real `onstart` proves the engine runs: the priming
+        // utterance's own (below) or a real message's. Until one of those
+        // fires we simply keep re-priming on each tap, which is harmless —
+        // the 800ms collapse allows at most one attempt per tap.
         try {
-          if (_synth && (_synth.speaking || _synth.pending)) {
-            _ttsSpoke = true;
-            console.log('[VideoTrack][TTS] engine accepted the prime — unlocked');
+          if (_synth && _synth.speaking) {
+            console.log('[VideoTrack][TTS] engine is speaking — prime looks live');
           }
         } catch (e) {}
       }, 60);
@@ -4498,11 +4511,10 @@
       _ttsOn = cur;
       if (!_ttsOn) ttsStop();
       console.log('[VideoTrack][TTS] follows Botpress speaker →', _ttsOn ? 'ON (unmuted)' : 'OFF (muted)');
-      // Unmuting has to DO something, or the button feels broken: while muted
-      // ttsScanDom still marks every row done (so a mute is not a backlog), so
-      // after unmuting there is nothing left to say and the next sound only
-      // arrives with the bot's next message. Read the latest message now.
-      if (_ttsOn) ttsSpeakLatestRow('unmuted');
+      // NOTE: unmuting does NOT speak from here. This runs on a 250ms poll,
+      // which carries no user activation — iOS and Android refuse speak()
+      // outside a gesture, so it worked on desktop and was silent on every
+      // phone. The speaking is done straight from the tap handler instead.
     }
 
     // Speak the newest bot message on demand. Used by unmute; deliberately
@@ -5325,6 +5337,18 @@
           if (e && e.isTrusted === false) return;
           // Sound is sound — it must not move the view. See soundTapJustHappened().
           _soundTapAt = Date.now();
+          // If this tap is turning sound ON, speak RIGHT HERE, inside the
+          // gesture. A phone's speech engine only accepts speak() while a real
+          // user activation is in flight; doing it from the 250ms poller (as
+          // the first attempt did) works on desktop and is silent on every
+          // phone. bpSoundIsOn() still reports the state BEFORE Botpress
+          // toggles, so false here means "they are unmuting".
+          try {
+            if (bpSoundIsOn() === false) {
+              _ttsOn = true;
+              ttsSpeakLatestRow('unmuted by tap');
+            }
+          } catch (e3) {}
           if (!_ttsUserTouchedSound) {
             _ttsUserTouchedSound = true;
             _ttsSoundSettled = true;
