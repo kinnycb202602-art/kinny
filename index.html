@@ -950,6 +950,31 @@
         v.preload = 'metadata';
       } catch (e) { console.warn('[VideoTrack] video setup:', e && e.message); }
 
+      // ── Reserve the card's height BEFORE metadata arrives ──
+      // (emon, 2026-10-17) Second half of the "screen jumps" fix. Images
+      // already reserve their box (vt-img-loading → applyImgSizing); a <video>
+      // did not. It rendered near-zero-tall, then snapped to its real height
+      // the moment loadedmetadata fired, shoving everything below it down —
+      // exactly while the user was reading the text above it.
+      // 16/9 is assumed up front (every course clip is landscape), replaced by
+      // the file's own ratio as soon as it can be measured. Skipped while the
+      // landscape overlay owns the element: _vfsLayout() writes the whole style
+      // attribute itself, and closeVideoLandscape() restores what we set here.
+      function vtSizeVideo() {
+        try {
+          if (_vfs && _vfs.v === v) return;
+          var w = v.videoWidth, h = v.videoHeight;
+          v.style.setProperty('width',  '100%', 'important');
+          v.style.setProperty('height', 'auto', 'important');
+          v.style.setProperty('background', '#000', 'important');
+          v.style.setProperty('border-radius', '8px', 'important');
+          v.style.setProperty('aspect-ratio',
+            (w > 0 && h > 0) ? (w + ' / ' + h) : '16 / 9', 'important');
+        } catch (e) {}
+      }
+      vtSizeVideo();
+      v.addEventListener('loadedmetadata', vtSizeVideo);
+
       // ── Show a thumbnail (first frame) ───────────────────────
       // Botpress videos have no `poster`, and preload="metadata" alone leaves
       // many browsers (esp. iOS Safari) showing a blank/black box until play.
@@ -1507,18 +1532,49 @@
     // scroll; triggers one catch-up scroll after the reading finishes.
     var _scrollHeld = false;
 
-    function scrollChatToBottom() {
+    // ── Pin-to-bottom: only when the reader is already at the bottom ──
+    // (emon, 2026-10-17) Users reported the screen "jumping" / losing focus.
+    // Kinny often sends an image, then text, then a video a second or two
+    // apart, and every arrival used to yank the view to the newest message —
+    // four times per message (see the delay list below). Someone still reading
+    // the first card was dragged away three more times.
+    //
+    // Read-aloud listeners were already shielded (ttsHoldsScroll); this
+    // generalises the same protection to everyone. The view is pinned only when
+    // the reader is within STICK_PX of the bottom, i.e. following along live.
+    // If they have scrolled up to read, nothing moves, and Botpress's own grey
+    // "scroll to newest" circle is their way back — deliberately NOT replaced
+    // by a custom button (see the note in fixComposerInput), only enlarged.
+    //
+    // force = true for the cases that MUST land at the bottom: the user just
+    // sent something, a widget was injected for them to tap, the idle popup was
+    // dismissed, or a read-aloud burst just finished.
+    var STICK_PX = 260;
+
+    function chatNearBottom(sc) {
+      if (!sc) return true;
+      return (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
+    }
+    function chatScrollEl() {
+      var sr = bpShadowRoot();
+      return bpScrollEl(sr) ||
+             (sr && (sr.querySelector('.bpMessageListContainer') ||
+                     sr.querySelector('.bpMessageListViewport'))) || null;
+    }
+
+    function scrollChatToBottom(force) {
       // While a message is being read aloud, KEEP THAT MESSAGE ON SCREEN. New
       // bot messages arriving underneath must not yank the view to the bottom,
-      // or the listener loses the text being spoken.
+      // or the listener loses the text being spoken. Not overridable by force:
+      // the read-aloud release path runs its own catch-up scroll afterwards.
       if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) {
         _scrollHeld = true;
         return;
       }
-      var sr = bpShadowRoot();
-      var sc = bpScrollEl(sr) ||
-               (sr && (sr.querySelector('.bpMessageListContainer') ||
-                       sr.querySelector('.bpMessageListViewport')));
+      var sc = chatScrollEl();
+      // Reader has scrolled up — leave them alone, and don't drag the painscale
+      // widget into view either.
+      if (sc && !force && !chatNearBottom(sc)) return;
       if (sc) sc.scrollTop = sc.scrollHeight;
       // Also nudge the painscale widget into view if present.
       if (_painScaleEl && _painScaleEl.scrollIntoView) {
@@ -1526,8 +1582,13 @@
       }
     }
     // Scroll to bottom over a few frames so late-rendered content is caught.
-    function scrollChatToBottomSoon() {
-      [0, 120, 350, 700].forEach(function (d) { setTimeout(scrollChatToBottom, d); });
+    // Two passes when merely following along: more than that reads as a stutter
+    // now that images and video cards reserve their height up front. The forced
+    // path keeps a third, later pass, because it must not miss.
+    function scrollChatToBottomSoon(force) {
+      (force ? [0, 180, 520] : [0, 320]).forEach(function (d) {
+        setTimeout(function () { scrollChatToBottom(force); }, d);
+      });
     }
     // Collapse the on-screen keyboard by blurring the composer input.
     function blurComposer() {
@@ -1582,10 +1643,34 @@
         '.bpMessageBlocksBubble li{margin:0 0 .5em!important;padding-left:.15em!important;}' +
         '.bpMessageBlocksBubble li:last-child{margin-bottom:0!important;}' +
         '.bpMessageBlocksBubble li > p{margin:0!important;}' +
-        // NOTE: Botpress's own grey "scroll to newest" circle
-        // (.bpMessageListScrollDownButton) is deliberately LEFT ALONE. It was
-        // hidden for a day in favour of a custom green button; emon reverted
-        // that on 2026-09-01 — the grey circle is the one to keep.
+        // ── New messages fade in instead of popping ──
+        // (emon, 2026-10-17) Third part of the "screen jumps" fix. A card that
+        // materialises instantly reads as a jolt, which is what made a burst of
+        // image + text + video feel like the screen was lurching. Opacity only
+        // — deliberately no transform/translate, so this cannot shift layout or
+        // create a containing block for the inline widgets we append into the
+        // message list. Honours the OS "reduce motion" setting.
+        '@keyframes vt-row-in{from{opacity:0}to{opacity:1}}' +
+        '.bpMessageContainer{animation:vt-row-in .24s ease-out both!important;}' +
+        '@media (prefers-reduced-motion:reduce){' +
+          '.bpMessageContainer{animation:none!important;}' +
+        '}' +
+        // ── "回到最新" circle: bigger and in the brand green ──
+        // (emon, 2026-10-17) Now that the view is no longer force-pinned to the
+        // bottom, this native control is how a reader who scrolled up gets back
+        // to the newest message — so it has to be seen and hit easily by an
+        // elderly user. Botpress's own circle is deliberately still the ONE
+        // control for this job: it was hidden for a day in favour of a custom
+        // green button and emon reverted that on 2026-09-01. Only its size and
+        // contrast are changed here; no second button is added.
+        '.bpMessageListScrollDownButton{' +
+          'width:54px!important;height:54px!important;min-width:54px!important;' +
+          'background:#2f7d63!important;color:#fff!important;opacity:1!important;' +
+          'border:2px solid #fff!important;' +
+          'box-shadow:0 6px 18px rgba(0,0,0,.28)!important;}' +
+        '.bpMessageListScrollDownButton svg{' +
+          'width:26px!important;height:26px!important;' +
+          'stroke:#fff!important;fill:#fff!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
         '@media (max-width:600px){' +
@@ -2143,7 +2228,7 @@
             e.target.classList.contains('bpComposerInput')) {
           // Let Botpress send first, then drop focus to dismiss the keyboard.
           setTimeout(blurComposer, 50);
-          scrollChatToBottomSoon();
+          scrollChatToBottomSoon(true);   // the user just sent — always land at the bottom
           hidePainScale();   // user answered by typing → remove the scale widget
           beginPostSendLock();   // re-lock until the bot replies
         }
@@ -2155,7 +2240,7 @@
         if (!hit && t && t.getAttribute && t.getAttribute('aria-label') === 'Send Message Button') hit = t;
         if (hit) {
           setTimeout(blurComposer, 50);
-          scrollChatToBottomSoon();
+          scrollChatToBottomSoon(true);   // the user just sent — always land at the bottom
           hidePainScale();   // user answered by typing → remove the scale widget
           beginPostSendLock();   // re-lock until the bot replies
         }
@@ -2168,8 +2253,7 @@
         var mo = new MutationObserver(function () {
           // Read-aloud owns the scroll while it's speaking — don't pin.
           if (typeof ttsHoldsScroll === 'function' && ttsHoldsScroll()) { _scrollHeld = true; return; }
-          var nearBottom = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < 250;
-          if (nearBottom) sc.scrollTop = sc.scrollHeight;
+          if (chatNearBottom(sc)) sc.scrollTop = sc.scrollHeight;
         });
         mo.observe(sc, { childList: true, subtree: true });
       }
@@ -2344,7 +2428,7 @@
       }
       _psAttachTries = 0;
       if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
-      scrollChatToBottomSoon();
+      scrollChatToBottomSoon(true);   // a widget to tap — it has to be on screen
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
         _psObserver = new MutationObserver(function () {
@@ -3366,7 +3450,7 @@
       _ttsSession = false;
       if (typeof _scrollHeld === 'undefined' || !_scrollHeld) return;
       _scrollHeld = false;
-      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon();
+      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
     // Polled: end the burst only once nothing is being read, nothing is queued,
@@ -3383,7 +3467,7 @@
       // Unconditional: the tail of the burst (a video card, a choice widget)
       // often isn't a spoken message, so there may have been no suppressed pin
       // to replay — but it still needs to be brought into view.
-      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon();
+      if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
     function ttsScrollBegin(row, totalChars) {
@@ -4517,7 +4601,7 @@
         console.log('[VideoTrack] Popup → stay (' + o.tag + ')');
         if (typeof o.onPrimary === 'function') { o.onPrimary(); return; }
         hideIdlePopup();
-        try { scrollChatToBottom(); } catch (e) {}
+        try { scrollChatToBottom(true); } catch (e) {}
       });
       card.appendChild(b1);
 
@@ -4562,7 +4646,7 @@
         // popup itself stays short.
         onPrimary: function () {
           hideIdlePopup();
-          try { scrollChatToBottom(); } catch (e) {}
+          try { scrollChatToBottom(true); } catch (e) {}
           showScrollHint();
         },
         secondaryIcon: '🔄', secondary: '重新開始',
