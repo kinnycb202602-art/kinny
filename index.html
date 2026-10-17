@@ -5428,18 +5428,30 @@
           // the first attempt did) works on desktop and is silent on every
           // phone. bpSoundIsOn() still reports the state BEFORE Botpress
           // toggles, so false here means "they are unmuting".
-          // Decide BOTH directions here and now, from the state before
-          // Botpress toggles. The 250ms poller used to do this, and it raced:
-          // Botpress persists the new setting a moment later, so the poll
-          // could still read "muted" right after an unmute and immediately
-          // silence the speech this tap had just started.
+          // We TOGGLE OUR OWN STATE. We do not ask Botpress which way this
+          // tap goes.
+          //
+          // (emon's ?uidebug capture, 2026-10-17: bpSoundOn=null.)
+          // bpSoundIsOn() finds Botpress's sound setting by scanning
+          // localStorage for a bp-webchat-…-sound key. On a real phone that
+          // key is not there — the build or the version stores it elsewhere —
+          // so it returns null. Every piece of mute/unmute logic was branching
+          // on `=== false` / `=== true`, so with null NEITHER branch ran and
+          // the speaker button did nothing at all. The engine was never the
+          // problem: that same capture shows primed=true, everSpoke=true and a
+          // yue-HK voice selected, with "engine unlocked" in the log.
+          //
+          // A toggle button toggles. Our own _ttsOn is the source of truth,
+          // persisted so it survives a reload, and nothing here depends on
+          // being able to read Botpress's private storage.
           try {
-            var wasOn = bpSoundIsOn();
-            if (wasOn === false) {            // this tap turns sound ON
-              _ttsOn = true;
+            var turningOn = !_ttsOn;
+            _ttsOn = turningOn;
+            try { localStorage.setItem(TTS_SOUND_FLAG, turningOn ? 'unmuted' : 'muted'); } catch (e4) {}
+            console.log('[VideoTrack][TTS] speaker tapped → ' + (turningOn ? 'ON' : 'OFF'));
+            if (turningOn) {
               if (!ttsUnsilence()) ttsSpeakLatestRow('unmuted by tap');
-            } else if (wasOn === true) {      // this tap turns sound OFF
-              _ttsOn = false;
+            } else {
               ttsSilenceForMute();
             }
           } catch (e3) {}
@@ -5448,15 +5460,9 @@
             _ttsSoundSettled = true;
             console.log('[VideoTrack][TTS] speaker tapped by the user — start-of-session unmute disabled');
           }
-          // Record WHICH way they set it, every time, so a reload can respect a
-          // mute without also suppressing the unmute (see ttsApplyInitialUnmute).
-          // Read after the tick, once Botpress has actually toggled.
-          setTimeout(function () {
-            try {
-              var on = bpSoundIsOn();
-              if (on !== null) localStorage.setItem(TTS_SOUND_FLAG, on ? 'unmuted' : 'muted');
-            } catch (e2) {}
-          }, 300);
+          // (The choice is written above, from our own toggle. There used to
+          // be a 300ms readback of bpSoundIsOn() here; it reads null on a
+          // phone, so it recorded nothing and could never have worked.)
           return;
         }
         if (popupOpen()) return;
