@@ -1610,12 +1610,48 @@
     var _recountT = null;
     var _jumpTick = null;
 
-    // Anything at all still below the fold (not just unread) — the arrow is
-    // also a plain "go to the newest" when a card is cut off at the bottom.
+    // ── Why the button waits, and why it does not blink ──────
+    // (emon, prod, 2026-10-17: "成個 icon 有時候會閃下閃下, 好混亂")
+    // Three separate causes, all of them fixed here rather than by one knob:
+    //   1. While Kinny is still sending, every card that arrives or grows
+    //      moves the bottom edge, so a plain "is there anything below?" test
+    //      flips true/false several times a second. The button therefore does
+    //      not appear at all until the bot has been QUIET for QUIET_MS.
+    //   2. Showing and hiding each have to hold for a moment before they take
+    //      effect, so a single stray measurement can never produce a blink.
+    //   3. Appearing and disappearing use different thresholds (hysteresis):
+    //      it takes SHOW_PX of content below to appear but only drops out
+    //      under HIDE_PX, so hovering around one number cannot oscillate.
+    var QUIET_MS = 1000;      // bot must be silent this long before it appears
+    var SHOW_MS  = 400;       // "should be visible" must hold this long
+    var HIDE_MS  = 800;       // ditto for "should be hidden" — slower on purpose
+    var SHOW_PX  = 80;        // content below needed to appear
+    var HIDE_PX  = 16;        // content below under which it goes away
+    var _lastMsgAt = 0;
+    var _jumpVis   = false;
+    var _jumpWant  = false;
+    var _jumpVisT  = null;
+
     function chatGapBelow() {
       var sc = chatScrollEl();
       if (!sc) return 0;
       return sc.scrollHeight - sc.scrollTop - sc.clientHeight;
+    }
+
+    function setJumpVisible(want) {
+      if (want === _jumpVis) {                 // already there — drop any pending flip
+        if (_jumpVisT) { clearTimeout(_jumpVisT); _jumpVisT = null; }
+        return;
+      }
+      if (_jumpVisT && _jumpWant === want) return;      // same flip already scheduled
+      if (_jumpVisT) clearTimeout(_jumpVisT);
+      _jumpWant = want;
+      _jumpVisT = setTimeout(function () {
+        _jumpVisT = null;
+        _jumpVis  = _jumpWant;
+        var btn = ensureJumpBtn();
+        if (btn) btn.style.display = _jumpVis ? 'flex' : 'none';
+      }, want ? SHOW_MS : HIDE_MS);
     }
 
     // Create (or re-create, after a Botpress re-render) the jump button. It
@@ -1647,17 +1683,24 @@
       return btn;
     }
 
-    // ── What the jump button does: ONE SCREENFUL, never the end ──
-    // (emon, 2026-10-17) Flying to the bottom is exactly what loses an elderly
-    // reader: they cannot tell what they have already seen from what they have
-    // not. Someone following the read-aloud wants the next screenful. So each
-    // tap advances one screenful — with one adjustment: a box that needs an
-    // answer is useless half-shown, so if one falls inside that step the
-    // scroll is trimmed or stretched to land with the question AND its options
-    // fully visible.
+    // ── What one tap does: reveal the NEXT message whole ─────
+    // (emon, 2026-10-17) Not the bottom — flying to the end is exactly what
+    // loses an elderly reader, who then cannot tell what they have already
+    // seen from what they have not. One tap brings the next unfinished
+    // message fully into view, so the count goes down by one and the arrow
+    // stays for whatever is still below. Predictable, one message at a time.
     //
-    // The count is re-measured afterwards, never cleared: if messages are
-    // still waiting below, the arrow stays and the number simply goes down.
+    // Two cases need more than that:
+    //   • A message taller than the screen (a video card) can never be made
+    //     "fully visible", so paging a screenful is the only way to make
+    //     progress — without this the button appeared dead. This, plus the
+    //     MIN_STEP floor below, is why taps sometimes did nothing: the
+    //     computed move was a handful of pixels, or zero.
+    //   • Options belong with their question, so if the row right after the
+    //     one being revealed is an answer box and it still fits on the same
+    //     screen, it is brought along.
+    var MIN_STEP = 40;        // anything smaller reads as "the button is broken"
+
     function rowNeedsAnswer(row) {
       try {
         if (!row) return false;
@@ -1670,26 +1713,31 @@
       try {
         var sc = chatScrollEl();
         if (!sc) return;
-        var scBottom = sc.getBoundingClientRect().bottom;
+        var scR  = sc.getBoundingClientRect();
         var step = Math.max(140, sc.clientHeight - 60);   // a screenful, less a line of overlap
         var max  = sc.scrollHeight - sc.clientHeight;
+        var room = max - sc.scrollTop;
+        if (room <= 1) { recountUnread(); return; }
 
-        // First thing below the fold that the reader has to act on.
-        var rows = sc.querySelectorAll('.bpMessageContainer');
-        var need = -1;
+        var rows  = sc.querySelectorAll('.bpMessageContainer');
+        var delta = 0;
         for (var i = 0; i < rows.length; i++) {
           var r = rows[i].getBoundingClientRect();
-          if (r.bottom <= scBottom - 8) continue;        // already fully visible
-          if (!rowNeedsAnswer(rows[i])) continue;
-          need = r.bottom - scBottom + 16;               // px needed to reveal it whole
+          if (r.bottom <= scR.bottom - 8) continue;       // already seen in full
+          if (r.height > sc.clientHeight - 40 || r.top < scR.top + 8) {
+            delta = step;                                 // too tall to frame — page on
+          } else {
+            delta = r.bottom - scR.bottom + 12;           // reveal this one whole
+            var next = rows[i + 1];
+            if (next && rowNeedsAnswer(next)) {           // keep options with their question
+              var d2 = next.getBoundingClientRect().bottom - scR.bottom + 12;
+              if (d2 > delta && d2 <= step + 120) delta = d2;
+            }
+          }
           break;
         }
-
-        // Land on the question when it is within about a screenful (whether
-        // that means stopping short of a full page or reaching a little past
-        // it); otherwise just advance one screenful.
-        var delta = (need >= 0 && need <= step + 120) ? need : step;
-        sc.scrollTop = Math.min(max, sc.scrollTop + Math.max(0, delta));
+        if (delta < MIN_STEP) delta = step;               // never a dead-feeling tap
+        sc.scrollTop = Math.min(max, sc.scrollTop + delta);
         recountUnread();
         setTimeout(recountUnread, 350);
       } catch (e) {}
@@ -1702,8 +1750,11 @@
       try {
         var btn = ensureJumpBtn();
         if (!btn) return;
-        var show = (_unread > 0 || chatGapBelow() > 24) ? 'flex' : 'none';
-        if (btn.style.display !== show) btn.style.display = show;
+        var gap   = chatGapBelow();
+        var quiet = (Date.now() - _lastMsgAt) >= QUIET_MS;
+        // Hysteresis: once visible it takes a much smaller gap to stay.
+        var want  = _jumpVis ? (gap > HIDE_PX) : (quiet && (gap > SHOW_PX || _unread > 0));
+        setJumpVisible(want);
         var b = btn.querySelector('#vt-unread');
         if (!b) return;
         var txt  = _unread > 99 ? '99+' : String(_unread);
@@ -1746,6 +1797,7 @@
     }
     function markPending(rows) {
       for (var i = 0; i < rows.length; i++) _pending.push(rows[i]);
+      _lastMsgAt = Date.now();     // restarts the quiet period — see setJumpVisible
       scheduleRecount();
     }
     function clearUnread() {
