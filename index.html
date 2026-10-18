@@ -1667,6 +1667,11 @@
           }
           _scrollLast = nowTop;
           _stick = (sc.scrollHeight - sc.scrollTop - sc.clientHeight) < STICK_PX;
+          // Only the PERSON can send themselves "away". Read-aloud parking the
+          // view on the message it is reading is not the reader leaving — that
+          // mistake stopped read-aloud following from the second message on.
+          if (_stick) _readerAway = false;
+          else if (Date.now() - _scUserAt < 1200) _readerAway = true;
           recountUnread();
         }, { passive: true });
       }
@@ -2051,6 +2056,7 @@
     // time a message lands the card has already grown the list, so measuring
     // now always says "far from the bottom" and nothing would ever follow.
     var STICK_PX = 140;
+    var _readerAway = false;   // true only after the person scrolls up themselves
     var _stick = true;
     var _followT = null;
 
@@ -4072,6 +4078,9 @@
       document.addEventListener('touchstart', function () { moved = false; }, opts);
       document.addEventListener('touchmove',  function () { moved = true; mark(); }, opts);
       document.addEventListener('touchend',   function () { if (moved) mark(); }, opts);
+      // Dragging the scrollbar with a mouse. A plain click (OK button) does
+      // not count — only movement with the button held.
+      document.addEventListener('mousemove', function (e) { if (e && e.buttons) mark(); }, opts);
       document.addEventListener('keydown', function (e) {
         if (/^(Arrow(Up|Down)|Page(Up|Down)|Home|End|Spacebar| )$/.test((e && e.key) || '')) mark();
       }, true);
@@ -4187,9 +4196,9 @@
       // reader has scrolled up to read something, read-aloud does not haul
       // them down to the new message — the pill tells them it is waiting.
       // Caught up, it follows the voice all the way through.
-      if (!_stick) {
+      if (_readerAway) {
         _scAbort = true;
-        console.log('[VideoTrack][TTS] reading without scrolling — the reader is up the page');
+        console.log('[VideoTrack][TTS] reading without scrolling — the reader scrolled up themselves');
         return;
       }
       ttsScrollJump(0);                 // land on the message before the voice starts
