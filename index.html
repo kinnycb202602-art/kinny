@@ -2210,9 +2210,11 @@
         // styles live in the DOCUMENT stylesheet, not here: the button had to
         // move out of the shadow root to clear the image/video buttons.
         '.bpMessageListScrollDownButton{display:none!important;}' +
-        // The band behind the sentence read-aloud is speaking.
-        '.vt-tts-hl{background:#fff2b0!important;border-radius:4px!important;' +
-          'box-shadow:0 0 0 2px #fff2b0!important;}' +
+        // Empty room at the foot of the transcript equal to whatever covers
+        // the bottom of the scroller (keyboard / composer / toolbar), so
+        // read-aloud can bring the newest message fully into view.
+        '.vt-tts-room::after{content:"";display:block;flex:none;' +
+          'height:var(--vt-tts-room,0px);}' +
         // Room at the foot of the transcript for the jump pill, so the newest
         // message can never end up sitting underneath it (emon, 2026-10-17).
         '.bpMessageListViewport{padding-bottom:72px!important;}' +
@@ -4269,20 +4271,86 @@
       return TTS_GAP_FALLBACK;   // don't cache the fallback — retry next message
     }
 
+    // The part of the scroller the reader can ACTUALLY see, in client coords.
+    // sc.clientHeight is not it on a phone: the composer, the soft keyboard and
+    // the Safari/Chrome toolbar can all sit over the bottom of the scroller,
+    // which is how a message looked "fully on screen" to the maths while the
+    // reader only saw its top half (emon, 2026-10-18).
+    function ttsVisibleBand(sc) {
+      var r = sc.getBoundingClientRect();
+      var top = r.top, bottom = r.bottom;
+      try {
+        var vv = window.visualViewport;
+        if (vv && vv.height > 0) {
+          top    = Math.max(top, vv.offsetTop);
+          bottom = Math.min(bottom, vv.offsetTop + vv.height);
+        } else if (window.innerHeight > 0) {
+          bottom = Math.min(bottom, window.innerHeight);
+        }
+      } catch (e) {}
+      try {
+        var srt = bpShadowRoot();
+        var comp = srt && (srt.querySelector('.bpComposerInputContainer') ||
+                           srt.querySelector('.bpComposerInput'));
+        if (comp) {
+          var c = comp.getBoundingClientRect();
+          if (c.height > 0 && c.top > top + 40 && c.top < bottom) bottom = c.top;
+        }
+      } catch (e) {}
+      if (bottom - top < 80) { top = r.top; bottom = r.top + sc.clientHeight; }
+      return { top: top, bottom: bottom };
+    }
+
+    // Whatever covers the bottom of the scroller (keyboard, composer, toolbar)
+    // must be matched by empty room at the end of the list — otherwise the
+    // newest message can never be scrolled clear of it and stays half-hidden
+    // however hard we scroll. 72px is the room already kept for the ↓ button.
+    // Done with an empty ::after INSIDE the scroller (.vt-tts-room, CSS in the
+    // shadow-root block) rather than padding: padding on a fixed-height
+    // content-box scroller grows the scroller itself, which grows the cover,
+    // which grows the padding — a feedback loop.
+    var _scRoomSet = -1;
+    function ttsEnsureBottomRoom(sc, band) {
+      try {
+        var cover = Math.max(0, Math.round(sc.getBoundingClientRect().bottom - band.bottom));
+        if (!sc.classList.contains('vt-tts-room')) sc.classList.add('vt-tts-room');
+        if (Math.abs(cover - _scRoomSet) < 4) return;
+        sc.style.setProperty('--vt-tts-room', cover + 'px');
+        _scRoomSet = cover;
+      } catch (e) {}
+    }
+
     // Where should scrollTop be when `frac` of the message has been read?
-    // frac 0 → message top parked one conversation-gap below the view's top.
-    // frac 1 → message bottom one gap above the view's base (tall messages only).
+    // The rule is "the reader sees the WHOLE message box":
+    //  • the box fits → show all of it. Already fully on screen → don't move.
+    //    Otherwise the smallest move that brings all of it in.
+    //  • the box is taller than the screen → frac 0 parks its top just below
+    //    the view's top, frac 1 lands its BOTTOM just above the view's base,
+    //    and in between it follows the voice.
     function ttsScrollTarget(frac, sc) {
       if (!_scRow || !_scRow.getBoundingClientRect) return null;
-      var rr = _scRow.getBoundingClientRect(), sr = sc.getBoundingClientRect();
+      var rr = _scRow.getBoundingClientRect();
       if (!rr.height) return null;
-      var gap      = ttsConvGap(sc);
-      var rowTop   = rr.top - sr.top + sc.scrollTop;
-      var startTop = rowTop - gap;                                  // spacing above the message
-      var endTop   = rowTop + rr.height - sc.clientHeight + gap;    // spacing below it
-      // Fits on screen → one position, top-anchored with its gap. No creeping.
-      var target   = (endTop <= startTop) ? startTop
-                                          : startTop + (endTop - startTop) * frac;
+      var band = ttsVisibleBand(sc);
+      ttsEnsureBottomRoom(sc, band);
+      rr = _scRow.getBoundingClientRect();
+      var visH = band.bottom - band.top;
+      var gap  = ttsConvGap(sc);
+      var cur  = sc.scrollTop;
+      var target;
+      if (rr.height + gap * 2 <= visH) {
+        if (rr.top >= band.top && rr.bottom <= band.bottom) {
+          target = cur;                                         // whole box already visible
+        } else if (rr.bottom > band.bottom) {
+          target = cur + (rr.bottom - (band.bottom - gap));     // below → bring its bottom up
+        } else {
+          target = cur + (rr.top - (band.top + gap));           // above → bring its top down
+        }
+      } else {
+        var startTop = cur + (rr.top - (band.top + gap));
+        var endTop   = cur + (rr.bottom - (band.bottom - gap));
+        target = startTop + (endTop - startTop) * Math.max(0, Math.min(1, frac));
+      }
       var max = Math.max(0, sc.scrollHeight - sc.clientHeight);
       return Math.max(0, Math.min(max, target));
     }
@@ -4311,9 +4379,11 @@
       // scrollIntoView knows the true geometry, so fall back to it and then
       // back off by the conversation gap for the spacing.
       if (frac === 0) {
-        var rr = _scRow.getBoundingClientRect(), sr = sc.getBoundingClientRect();
-        var off = rr.top - sr.top;
-        if (off < -24 || off > sc.clientHeight * 0.6) {
+        // A box that fits is now bottom-aligned, so "near the top" is no longer
+        // the test — the test is whether the box is on screen at all.
+        var rr = _scRow.getBoundingClientRect(), bd = ttsVisibleBand(sc);
+        var off = rr.top - bd.top;
+        if (rr.bottom < bd.top + 8 || rr.top > bd.bottom - 8) {
           console.log('[VideoTrack][TTS] jump missed (row ' + Math.round(off) +
                       'px from top) — using scrollIntoView');
           try { _scRow.scrollIntoView({ block: 'start', inline: 'nearest' }); } catch (e) {}
@@ -4415,7 +4485,9 @@
     // per-word tracking. If the spoken text cannot be located in the bubble
     // (the sanitizer rewrites some messages) nothing is highlighted and
     // reading carries on — never let a cosmetic touch break the speech.
-    var TTS_HL_ON = true;
+    // OFF (emon, 2026-10-18): no yellow highlight — showing the whole message
+    // box is what matters. The helpers stay so the clear calls are harmless.
+    var TTS_HL_ON = false;
     var _hlEl = null;
 
     function ttsClearHighlight() {
@@ -4476,10 +4548,17 @@
             console.log('[VideoTrack][TTS] first utterance started — engine is live');
             setStatus('success', 'TTS speaking');
           }
-          ttsHighlightChunk(chunk);
           ttsScrollAdvance(chunk.length);
         };
-        u.onend   = function () { if (i === lastIdx) ttsMessageDone(); };
+        u.onend   = function () {
+          if (i === lastIdx) {
+            // Finish on the box's BOTTOM, whatever the character arithmetic
+            // said — never leave the reader looking at half a message.
+            // (ttsScrollJump stands down by itself for a reader up the page.)
+            ttsScrollJump(1);
+            ttsMessageDone();
+          }
+        };
         u.onerror = function (e) {
           // 'interrupted'/'canceled' are normal — they fire on our own cancel().
           var err = (e && e.error) || 'unknown';
