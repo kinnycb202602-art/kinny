@@ -153,12 +153,26 @@
     }
     #vt-jump.vt-jump-show { animation: vt-jump-in .34s ease-out both; }
     @media (prefers-reduced-motion: reduce) { #vt-jump.vt-jump-show { animation: none; } }
+    /* Botpress's own arrow, copied in by adoptBpArrow(); white via the mask. */
+    #vt-jump .vt-jump-glyph {
+      display: none;
+      width: 26px;
+      height: 26px;
+      background-color: #fff;
+      pointer-events: none;
+    }
+    /* Unread count back on the circle's top-right corner (emon, 2026-10-18),
+       WhatsApp-style, outside the arrow rather than beside it. */
     #vt-unread {
-      min-width: 24px;
-      height: 24px;
+      position: absolute;
+      top: -5px;
+      right: -5px;
+      min-width: 26px;
+      height: 26px;
       box-sizing: border-box;
       padding: 0 6px;
-      border-radius: 12px;
+      border: 2px solid #fff;
+      border-radius: 13px;
       background: #d93025;
       color: #fff;
       font-size: 14px;
@@ -167,7 +181,8 @@
       display: none;
       align-items: center;
       justify-content: center;
-      flex: 0 0 auto;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+      pointer-events: none;
     }
 
     /* ── Image enlarge button (one per image, always visible) ── */
@@ -1847,9 +1862,40 @@
       } catch (e) {}
     }
 
+    // Use Botpress's OWN down-arrow glyph (emon, 2026-10-18: "箭嘴要用返之前
+    // 嗰個"). It is not an <svg>: Botpress paints it on the native scroll
+    // button's ::after with a mask-image. That button is hidden, but its
+    // computed ::after style still carries the mask, so copy it onto our
+    // glyph span. Until it can be read, the SVG arrow stands in.
+    var _bpArrowDone = false;
+    function adoptBpArrow(btn) {
+      if (_bpArrowDone || !btn) return;
+      try {
+        var sr = bpShadowRoot();
+        var nb = sr && sr.querySelector('.bpMessageListScrollDownButton');
+        if (!nb) return;
+        var cs = getComputedStyle(nb, '::after');
+        var img = cs.webkitMaskImage || cs.maskImage;
+        if (!img || img === 'none') return;
+        var g = btn.querySelector('.vt-jump-glyph');
+        if (!g) return;
+        var size = cs.webkitMaskSize || cs.maskSize || 'contain';
+        var pos  = cs.webkitMaskPosition || cs.maskPosition || 'center';
+        g.style.webkitMaskImage = img;  g.style.maskImage = img;
+        g.style.webkitMaskSize  = size; g.style.maskSize  = size;
+        g.style.webkitMaskPosition = pos; g.style.maskPosition = pos;
+        g.style.webkitMaskRepeat = 'no-repeat'; g.style.maskRepeat = 'no-repeat';
+        g.style.display = 'block';
+        var svg = btn.querySelector('svg');
+        if (svg) svg.style.display = 'none';
+        _bpArrowDone = true;
+        console.log('[VideoTrack] jump button uses the Botpress arrow');
+      } catch (e) {}
+    }
+
     function ensureJumpBtn() {
       var btn = document.getElementById('vt-jump');
-      if (btn) { placeJumpBtn(btn); return btn; }
+      if (btn) { adoptBpArrow(btn); placeJumpBtn(btn); return btn; }
       btn = document.createElement('button');
       btn.id = 'vt-jump';
       btn.type = 'button';
@@ -1859,6 +1905,7 @@
           '<path d="M12 4v14m0 0l-6-6m6 6l6-6" fill="none" stroke="#fff" ' +
           'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
         '</svg>' +
+        '<span class="vt-jump-glyph" aria-hidden="true"></span>' +
         '<span id="vt-unread" aria-live="polite"></span>';
       btn.addEventListener('click', function (e) {
         // Stop Botpress's own list handlers from seeing this click at all.
