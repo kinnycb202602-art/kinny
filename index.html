@@ -2161,6 +2161,47 @@
       _jumpTick = setInterval(recountUnread, 900);
     }
 
+    // ── Answered choice buttons stay answered after a reload ──
+    // Live, Botpress disables a button group once it is answered (the chosen
+    // one keeps its colour, the rest go grey). Restoring history after a
+    // reload forgets that, and EVERY old button comes back tappable — tapping
+    // one sends its text as the answer to whatever the bot is asking NOW
+    // (d11 test run, 2026-10-24). Re-lock any group the participant has
+    // already replied to. "Replied" = a visible OUTGOING message comes after
+    // it, so a question still waiting for its answer is never touched.
+    var ANSWERED_BG = 'rgb(240, 241, 243)', ANSWERED_FG = 'rgb(95, 104, 118)';   // Botpress's own answered look
+    function lockAnsweredChoices() {
+      try {
+        var sr = bpShadowRoot(); if (!sr) return;
+        var rows = sr.querySelectorAll('.bpMessageContainer');
+        for (var i = 0; i < rows.length - 1; i++) {
+          var r = rows[i];
+          if (r.getAttribute('data-direction') !== 'incoming') continue;
+          var bs = r.querySelectorAll('.bpMessageBlocksButton');
+          if (!bs.length) continue;
+          var reply = null;
+          for (var k = i + 1; k < rows.length; k++) {
+            if (rows[k].getAttribute('data-direction') === 'outgoing' && rows[k].offsetHeight > 0) {
+              reply = (rows[k].textContent || '').trim(); break;
+            }
+          }
+          if (reply === null) continue;                 // still waiting for an answer
+          for (var b = 0; b < bs.length; b++) {
+            var el = bs[b];
+            if (el.disabled && el.dataset.vtLocked) continue;   // already done
+            el.disabled = true;
+            el.dataset.vtLocked = '1';
+            el.style.setProperty('cursor', 'default', 'important');
+            if ((el.textContent || '').trim() !== reply) {
+              el.style.setProperty('background-color', ANSWERED_BG, 'important');
+              el.style.setProperty('color', ANSWERED_FG, 'important');
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    setInterval(lockAnsweredChoices, 1500);
+
     function scrollChatToBottom(force) {
       // While a message is being read aloud, KEEP THAT MESSAGE ON SCREEN. New
       // bot messages arriving underneath must not yank the view to the bottom,
@@ -4217,7 +4258,10 @@
       // And never drag a reader who has scrolled up: read-aloud finishing is
       // not something they asked for. Only the reader's own actions (tapping
       // the pill, sending, dismissing the popup) may move them.
-      if (!_stick) return;
+      // _readerAway, not !_stick: read-aloud's own parking of the view (the
+      // whole-message rule) leaves it >140px from the bottom, which is not
+      // the reader leaving. (d11 test 2026-10-24: menu left 164px under.)
+      if (_readerAway) return;
       if (typeof scrollChatToBottomSoon === 'function') scrollChatToBottomSoon(true);
     }
 
@@ -4238,8 +4282,11 @@
       // The tail of the burst (a video card, a choice widget) often isn't a
       // spoken message, so there may have been no suppressed pin to replay —
       // but it still needs to be brought into view.
-      if (!_stick) {
-        console.log('[VideoTrack][TTS] burst finished — reader is up the page, not moving');
+      // Only the PERSON scrolling up counts (_readerAway). Read-aloud parks the
+      // view on the message it read, so _stick is usually false by now even
+      // though nobody moved — that left the end-of-lesson menu off screen.
+      if (_readerAway) {
+        console.log('[VideoTrack][TTS] burst finished — reader scrolled up themselves, not moving');
         return;
       }
       console.log('[VideoTrack][TTS] burst finished — releasing to the newest message');
