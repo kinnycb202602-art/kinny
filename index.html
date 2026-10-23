@@ -2279,7 +2279,11 @@
           'display:none!important;pointer-events:none!important;}' +
         // Mobile only: narrow the left avatar gap + side padding and widen the
         // bubbles so text/images spread wider on small screens.
-        '@media (max-width:600px){' +
+        // Also on ANY touch phone, whatever width it reports (emon, 2026-10-23):
+        // Safari "Request Desktop Website", some in-app browsers and zoomed-out
+        // pages report more than 600px, which switched this off and left a wide
+        // gap between the avatar and the message on some phones.
+        '@media (max-width:600px),(hover:none) and (pointer:coarse){' +
           '.bpMessageListViewport{padding-left:6px!important;padding-right:6px!important;}' +
           '.bpMessageContainer{gap:4px!important;}' +
           '.bpMessageBlocksBubble{max-width:95%!important;}' +
