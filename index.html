@@ -3575,8 +3575,25 @@
         // (Not reachable when finished === 0: Main/Standard15 branches away
         // before emitting the marker.) So keep the rule, but never let it
         // render an empty menu — fall back to the revision list.
-        if (newGroup) groups.push(newGroup);
-        else if (oldGroup) groups.push(oldGroup);
+        //
+        // ONE button only (emon, 2026-10-23) — the participant has no real
+        // choice at the start, so the menu stops presenting one:
+        //   1. there is an unlocked session not yet done → just that one
+        //      (finished+1). Later unlocked sessions are no longer shown greyed.
+        //   2. everything unlocked is done → just the LAST finished session,
+        //      offered as a revision, instead of the whole 1…finished list.
+        // The button still sends the bare number, exactly as before.
+        var nextNum = fin + 1;
+        if (nextNum <= current && nextNum <= MENU_MAX_SESSION) {
+          groups.push({ header: '🚀 今日課程：',
+                        items: [{ num: nextNum, label: '開始第 ' + nextNum + ' 節', on: true }] });
+        } else if (fin >= 1) {
+          var lastDone = Math.min(fin, MENU_MAX_SESSION);
+          groups.push({ header: (lastDone >= MENU_MAX_SESSION)
+                                  ? '🎉 你已完成全部 ' + MENU_MAX_SESSION + ' 節課程！'
+                                  : '✅ 本週課程已完成，下一節尚未開放。',
+                        items: [{ num: lastDone, label: '重溫第 ' + lastDone + ' 節', on: true }] });
+        }
       }
       console.log('[VideoTrack] Session menu placement:', place,
                   '| groups:', groups.map(function (g) { return g.kind || g.header; }).join(' / '));
