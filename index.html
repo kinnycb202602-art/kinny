@@ -3090,10 +3090,14 @@
       }
       _psAttachTries = 0;
       if (c.lastElementChild !== _painScaleEl) c.appendChild(_painScaleEl);
-      // NOT forced: the pain scale arrives with a bot message, and nothing the
-      // bot does may move the screen. The circle's count tells the reader
-      // something is waiting; tapping it brings them to the scale.
-      scrollChatToBottomSoon(false);
+      // A widget is not a message row, so the message pinning never saw it and
+      // the unread count never counted it: a reader at the bottom was left
+      // looking at 「請點擊以下選項」 with the buttons just below the fold and
+      // no arrow (d11 test run, 2026-10-23, end-of-lesson menu 164px under).
+      // Pin it exactly like a message — only when the reader is at the bottom,
+      // never while read-aloud owns the view (scheduleFollow checks both).
+      scrollChatToBottomSoon(false);   // recount
+      scheduleFollow();
       if (!_psObserver) {
         // Keep it attached & pinned to the bottom across Botpress re-renders.
         _psObserver = new MutationObserver(function () {
